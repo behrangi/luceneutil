@@ -165,6 +165,7 @@ class Index:
     hnswThreadsPerMerge=1,
     hnswThreadPoolCount=1,
     quantizeKNNGraph=False,
+    indexPath=None,
   ):
     self.checkout = checkout
     self.dataSource = dataSource
@@ -223,6 +224,15 @@ class Index:
     self.hnswThreadsPerMerge = hnswThreadsPerMerge
     self.hnswThreadPoolCount = hnswThreadPoolCount
     self.quantizeKNNGraph = quantizeKNNGraph
+    self.indexPath = indexPath
+
+  def getPath(self):
+    if self.indexPath is not None:
+      return self.indexPath
+    return benchUtil.nameToIndexPath(self.getName())
+
+  def hasExplicitPath(self):
+    return self.indexPath is not None
 
   def getName(self):
     if self.assignedName is not None:
@@ -540,6 +550,21 @@ class Competition:
       raise RuntimeError("expected 2 competitors but was %d" % (len(self.competitors)))
     if not self.indices:
       raise RuntimeError("expected at least one index use withIndex(...)")
+
+    for competitor in self.competitors:
+      index = competitor.index
+      if not index.hasExplicitPath():
+        continue
+
+      indexPath = index.getPath()
+      if not self.benchIndex:
+        if not os.path.isdir(indexPath):
+          raise RuntimeError(f'search-only index path does not exist or is not a directory: "{indexPath}"')
+      elif not self.benchSearch:
+        if os.path.exists(indexPath):
+          raise RuntimeError(f'build-only index path already exists; refusing to overwrite or reuse it: "{indexPath}"')
+      elif os.path.exists(indexPath) and not os.path.isdir(indexPath):
+        raise RuntimeError(f'index path exists but is not a directory: "{indexPath}"')
 
     # If a competitor is named 'base', use that as base:
     base = None

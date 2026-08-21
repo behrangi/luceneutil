@@ -976,7 +976,7 @@ class RunAlgs:
     if type(profilerStackSize) is int:
       profilerStackSize = (profilerStackSize,)
 
-    fullIndexPath = nameToIndexPath(index.getName())
+    fullIndexPath = index.getPath()
     if os.path.exists(fullIndexPath) and not index.doUpdate:
       print("  %s: already exists" % fullIndexPath)
       return fullIndexPath
@@ -1256,7 +1256,7 @@ class RunAlgs:
     w("-classpath", cp)
     w("perf.SearchPerfTest")
     w("-dirImpl", c.directory)
-    w("-indexPath", nameToIndexPath(c.index.getName()))
+    w("-indexPath", c.index.getPath())
     if c.index.facets is not None:
       for tup in c.index.facets:
         w("-facets", ";".join(tup))

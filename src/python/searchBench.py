@@ -67,7 +67,7 @@ def run(id, base, challenger, coldRun=False, doCharts=False, search=False, index
           p = True
         seen.add(c.index)
         r.makeIndex(id, c.index, doCharts)
-        segCount = benchUtil.getSegmentCount(benchUtil.nameToIndexPath(c.index.getName()))
+        segCount = benchUtil.getSegmentCount(c.index.getPath())
         if indexSegCount is None:
           indexSegCount = segCount
           indexCommit = c.commitPoint

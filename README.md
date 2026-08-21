@@ -132,6 +132,25 @@ python src/python/localrun.py -source wikimediumall --mode search
 
 Search mode requires the indexes identified by the benchmark configuration to already exist.
 
+### Explicit index path
+
+Use `--index-path` to build or search one canonical index at an exact location instead of using the path generated from the benchmark configuration:
+
+```bash
+python src/python/localrun.py -source wikimediumall --mode build --index-path /data/lucene-index
+python src/python/localrun.py -source wikimediumall --mode search --index-path /data/lucene-index
+```
+
+The path identifies the complete luceneutil index root created by the benchmark, not only its inner Lucene `index/` subdirectory. When transferring a canonical index to another system, copy the complete directory, including any index, facet, taxonomy, or related benchmark files beneath it.
+
+User-supplied paths are expanded with `expanduser` and converted to absolute paths before benchmark configuration. Both competitors use the same canonical index.
+
+- In `--mode search`, the path must be an existing directory and index creation is not invoked.
+- In `--mode build`, the path must not exist. An existing path is never deleted, overwritten, or silently reused.
+- In `--mode both`, an absent path is built and an existing directory is reused.
+
+Python does not inspect Lucene index contents; Lucene determines whether an existing directory contains a valid usable index. An explicit canonical index cannot be combined with `--reindex`, which creates a separate candidate index in the ordinary A/B workflow.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM
