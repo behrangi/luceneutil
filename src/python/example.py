@@ -20,11 +20,25 @@ import os
 
 import competition
 
+
+def configure_mode(comp, mode):
+  if mode == "build":
+    comp.skipSearch()
+  elif mode == "search":
+    comp.skipIndex()
+
+
 # simple example that runs benchmark with WIKI_MEDIUM source and taks files
 # Baseline here is ../lucene_baseline versus ../lucene_candidate
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(prog="Local Benchmark Run", description="Run a local benchmark on provided source dataset.")
   parser.add_argument("-s", "-source", "--source", help="Data source to run the benchmark on.")
+  parser.add_argument(
+    "--mode",
+    choices=("both", "build", "search"),
+    default="both",
+    help="Benchmark execution mode: build indexes and search (both), build indexes only, or search existing indexes only (default: both)",
+  )
   parser.add_argument("-searchConcurrency", "--searchConcurrency", default="-1", type=int, help="Search concurrency, 0 for disabled, -1 for using all cores")
   parser.add_argument("-b", "--baseline", default=os.environ.get("BASELINE") or "lucene_baseline", help="Path to lucene repo to be used for baseline")
   parser.add_argument("-c", "--candidate", default=os.environ.get("CANDIDATE") or "lucene_candidate", help="Path to lucene repo to be used for candidate")
@@ -37,6 +51,7 @@ if __name__ == "__main__":
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.searchConcurrency != 0
   comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups)
+  configure_mode(comp, args.mode)
 
   index = comp.newIndex(
     args.baseline,

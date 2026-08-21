@@ -110,6 +110,28 @@ While benchmarking an indexing side change, you might want to recreate the index
 python src/python/localrun.py -source wikimediumall -r
 ```
 
+### Execution modes
+
+By default, a local benchmark builds any missing indexes and then runs the search benchmark. The same behavior can be selected explicitly with `--mode both`:
+
+```bash
+python src/python/localrun.py -source wikimediumall --mode both
+```
+
+Use `--mode build` to build any missing indexes without running the search benchmark:
+
+```bash
+python src/python/localrun.py -source wikimediumall --mode build
+```
+
+Use `--mode search` to search existing indexes without invoking index creation:
+
+```bash
+python src/python/localrun.py -source wikimediumall --mode search
+```
+
+Search mode requires the indexes identified by the benchmark configuration to already exist.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

@@ -584,7 +584,7 @@ class Competition:
       skipReport=not canSearch,
     )
 
-    if not canSearch:
+    if not canSearch and noCommitIndices:
       print()
       print("WARNING: search benchmark was skipped because the following indices use waitForCommit=False")
       print("         (no segments file is written — the indexer calls rollback instead of commit):")
