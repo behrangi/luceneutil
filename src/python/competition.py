@@ -478,6 +478,7 @@ class Competition:
     self.requireOverlap = requireOverlap
     self.onlyTaskPatterns = None
     self.notTaskPatterns = None
+    self.requestedTaskCategories = None
     # TODO: not implemented yet
     self.remoteHost = remoteHost
     if randomSeed is not None:
@@ -521,6 +522,9 @@ class Competition:
     if self.notTaskPatterns is None:
       self.notTaskPatterns = []
     self.notTaskPatterns.append(pattern)
+
+  def setRequestedTaskCategories(self, categories):
+    self.requestedTaskCategories = tuple(categories)
 
   def newIndex(self, checkout, data, **kwArgs):
     index = Index(checkout, data, **kwArgs)
@@ -607,6 +611,7 @@ class Competition:
       requireOverlap=self.requireOverlap,
       randomSeed=self.randomSeed,
       skipReport=not canSearch,
+      requestedTaskCategories=self.requestedTaskCategories,
     )
 
     if not canSearch and noCommitIndices:

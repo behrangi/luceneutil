@@ -17,6 +17,7 @@
 
 import argparse
 import os
+import re
 
 import competition
 
@@ -36,6 +37,41 @@ def normalize_and_validate_options(parser, args):
     parser.error("--index-path cannot be combined with --reindex; an explicit path identifies one canonical index")
 
 
+def parseRequestedTaskCategories(parser, args):
+  value = args.queries.strip()
+  if value == "":
+    parser.error("--queries must not be empty")
+  if value == "all":
+    return None
+
+  categories = []
+  seen = set()
+  for entry in value.split(","):
+    category = entry.strip()
+    if category == "":
+      parser.error("--queries contains an empty category")
+    if category == "all":
+      parser.error("'all' is valid only as the entire --queries argument")
+    if category not in seen:
+      seen.add(category)
+      categories.append(category)
+
+  if args.mode == "build":
+    parser.error("--queries applies only when search is enabled; use --queries all with --mode build")
+
+  return tuple(categories)
+
+
+def configureTaskCategories(comp, requestedTaskCategories):
+  if requestedTaskCategories is None:
+    return True
+
+  for category in requestedTaskCategories:
+    comp.addTaskPattern("^%s$" % re.escape(category))
+  comp.setRequestedTaskCategories(requestedTaskCategories)
+  return "PKLookup" in requestedTaskCategories
+
+
 # simple example that runs benchmark with WIKI_MEDIUM source and taks files
 # Baseline here is ../lucene_baseline versus ../lucene_candidate
 if __name__ == "__main__":
@@ -51,6 +87,11 @@ if __name__ == "__main__":
     "--index-path",
     help="Exact canonical luceneutil index root to build or search (the complete benchmark-created directory, not only its inner index/ subdirectory)",
   )
+  parser.add_argument(
+    "--queries",
+    default="all",
+    help="Query categories: all, one exact category, or a comma-separated list such as HighTerm,AndHighHigh,HighPhrase",
+  )
   parser.add_argument("-searchConcurrency", "--searchConcurrency", default="-1", type=int, help="Search concurrency, 0 for disabled, -1 for using all cores")
   parser.add_argument("-b", "--baseline", default=os.environ.get("BASELINE") or "lucene_baseline", help="Path to lucene repo to be used for baseline")
   parser.add_argument("-c", "--candidate", default=os.environ.get("CANDIDATE") or "lucene_candidate", help="Path to lucene repo to be used for candidate")
@@ -59,12 +100,14 @@ if __name__ == "__main__":
   parser.add_argument("-warmups", "--warmups", default=20, type=int, help="Number of times each query runs within a single JVM for warmup (default: 20)")
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
+  requestedTaskCategories = parseRequestedTaskCategories(parser, args)
   print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.searchConcurrency != 0
   comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups)
   configure_mode(comp, args.mode)
+  includePK = configureTaskCategories(comp, requestedTaskCategories)
 
   index = comp.newIndex(
     args.baseline,
@@ -86,7 +129,7 @@ if __name__ == "__main__":
   )
 
   # create a competitor named baseline with sources in the ../trunk folder
-  comp.competitor("baseline", args.baseline, index=index, searchConcurrency=args.searchConcurrency)
+  comp.competitor("baseline", args.baseline, index=index, searchConcurrency=args.searchConcurrency, pk=includePK)
 
   # use the same index as baseline unless --reindex was passed.
   # create a competitor named my_modified_version (or provided candidate name) with sources in the ../patch folder
@@ -112,7 +155,7 @@ if __name__ == "__main__":
         ("sortedset:RandomLabel", "RandomLabel"),
       ),
     )
-  comp.competitor("my_modified_version", args.candidate, index=candidate_index, searchConcurrency=args.searchConcurrency)
+  comp.competitor("my_modified_version", args.candidate, index=candidate_index, searchConcurrency=args.searchConcurrency, pk=includePK)
 
   # start the benchmark - this can take long depending on your index and machines
   comp.benchmark("baseline_vs_patch")

@@ -151,6 +151,24 @@ User-supplied paths are expanded with `expanduser` and converted to absolute pat
 
 Python does not inspect Lucene index contents; Lucene determines whether an existing directory contains a valid usable index. An explicit canonical index cannot be combined with `--reindex`, which creates a separate candidate index in the ordinary A/B workflow.
 
+### Query category selection
+
+The default `--queries all` preserves the complete existing search workload, including the existing independent synthetic primary-key lookup workload. Select one exact category or a comma-separated list with `--queries`:
+
+```bash
+python src/python/localrun.py -source wikimediumall --queries all
+python src/python/localrun.py -source wikimediumall --queries HighTerm
+python src/python/localrun.py -source wikimediumall --queries HighTerm,AndHighHigh,HighPhrase
+python src/python/localrun.py -source wikimediumall --queries PKLookup
+python src/python/localrun.py -source wikimediumall --queries HighTerm,PKLookup
+```
+
+Category names are exact, case-sensitive literals. Whitespace around comma-separated names is ignored, and duplicate names retain their first occurrence. Empty and unknown category names are rejected.
+
+`PKLookup` is generated independently by luceneutil and is not tied to a preceding search result. Explicit regular-only selections disable implicit PK lookup. Listing `PKLookup` enables the existing synthetic PK workload; selecting only `PKLookup` filters out every regular task category. For indexes smaller than 6,000 documents, the existing PK generator may produce no PK tasks.
+
+`--mode build` accepts only `--queries all`, because query selection applies only when search is enabled. Build-only mode does not inspect or filter the search task file.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

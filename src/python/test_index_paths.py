@@ -156,6 +156,15 @@ class IndexPathTest(unittest.TestCase):
       self.assertEqual(index_path, comp.competitors[0].index.getPath())
       self.assertEqual(index_path, comp.competitors[1].index.getPath())
 
+  def test_requested_task_categories_are_immutable(self):
+    categories = ["HighTerm", "PKLookup"]
+    comp = competition.Competition(randomSeed=0)
+
+    comp.setRequestedTaskCategories(categories)
+    categories.append("LowTerm")
+
+    self.assertEqual(("HighTerm", "PKLookup"), comp.requestedTaskCategories)
+
   def new_competition(self, index):
     comp = competition.Competition(randomSeed=0)
     comp.indices.append(index)

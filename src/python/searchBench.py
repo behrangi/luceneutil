@@ -29,11 +29,92 @@ PYTHON_MAJOR_VER = sys.version_info.major
 osName = common.osName
 
 
-def run(id, base, challenger, coldRun=False, doCharts=False, search=False, index=False, verifyScores=True, verifyCounts=True, taskPatterns=None, randomSeed=None, requireOverlap=1.0, skipReport=False):
+def parseTaskCategory(line):
+  i = line.find(":")
+  if i == -1:
+    return None
+  return line[:i]
+
+
+def readTaskCategories(tasksFile):
+  categories = set()
+  with open(tasksFile, encoding="utf-8") as f:
+    for line in f:
+      category = parseTaskCategory(line)
+      if category is not None:
+        categories.add(category)
+  return categories
+
+
+def commonTasksFile(base, challenger):
+  tasksFile = base.tasksFile
+  if challenger.tasksFile != tasksFile:
+    raise RuntimeError("inconsistent taskFile %s vs %s" % (tasksFile, challenger.tasksFile))
+  return tasksFile
+
+
+def validateTaskCategories(requestedTaskCategories, tasksFile):
+  if requestedTaskCategories is None:
+    return
+
+  availableCategories = readTaskCategories(tasksFile)
+  availableCategories.add("PKLookup")
+  unknownCategories = [category for category in requestedTaskCategories if category not in availableCategories]
+  if unknownCategories:
+    raise RuntimeError(
+      "unknown query categories: %s (available categories: %s)" % (", ".join(unknownCategories), ", ".join(sorted(availableCategories)))
+    )
+
+
+def filterTasksFile(competitors, tasksFile, newTasksFile, taskPatterns):
+  pos, neg = taskPatterns
+  posPatterns = None if pos is None else [re.compile(pattern) for pattern in pos]
+  negPatterns = None if neg is None else [re.compile(pattern) for pattern in neg]
+
+  with open(tasksFile, encoding="utf-8") as f, open(newTasksFile, "wb") as fOut:
+    for line in f:
+      category = parseTaskCategory(line)
+      if category is not None:
+        if posPatterns is not None and not any(pattern.search(category) is not None for pattern in posPatterns):
+          continue
+        if negPatterns is not None and any(pattern.search(category) is not None for pattern in negPatterns):
+          continue
+      fOut.write(line.encode("utf-8"))
+
+  for competitor in competitors:
+    competitor.tasksFile = newTasksFile
+
+
+def run(
+  id,
+  base,
+  challenger,
+  coldRun=False,
+  doCharts=False,
+  search=False,
+  index=False,
+  verifyScores=True,
+  verifyCounts=True,
+  taskPatterns=None,
+  randomSeed=None,
+  requireOverlap=1.0,
+  skipReport=False,
+  requestedTaskCategories=None,
+):
   competitors = [challenger, base]
 
   if randomSeed is None:
     raise RuntimeError("missing randomSeed")
+
+  if not search:
+    search = "-search" in sys.argv
+
+  if not index:
+    index = "-index" in sys.argv
+
+  if search:
+    tasksFile = commonTasksFile(base, challenger)
+    validateTaskCategories(requestedTaskCategories, tasksFile)
 
   # verifyScores = False
   r = benchUtil.RunAlgs(constants.JAVA_COMMAND, verifyScores, verifyCounts)
@@ -42,11 +123,6 @@ def run(id, base, challenger, coldRun=False, doCharts=False, search=False, index
     print("Compile:")
     for c in competitors:
       r.compile(c)
-  if not search:
-    search = "-search" in sys.argv
-
-  if not index:
-    index = "-index" in sys.argv
   sum = search or "-sum" in sys.argv
 
   if index:
@@ -54,12 +130,7 @@ def run(id, base, challenger, coldRun=False, doCharts=False, search=False, index
     indexSegCount = None
     indexCommit = None
     p = False
-    tasksFile = None
     for c in competitors:
-      if tasksFile is None:
-        tasksFile = c.tasksFile
-      elif tasksFile != c.tasksFile:
-        raise RuntimeError("inconsistent taskFile %s vs %s" % (tasksFile, c.tasksFile))
       if c.index not in seen:
         if not p:
           print()
@@ -89,51 +160,10 @@ def run(id, base, challenger, coldRun=False, doCharts=False, search=False, index
       else:
         print("    tasks file: %s, NOT %s from %s" % (",".join(pos), ",".join(neg), tasksFile))
       newTasksFile = "%s/%s.tasks" % (constants.BENCH_BASE_DIR, os.getpid())
-      pos, neg = taskPatterns
-      if pos is None:
-        posPatterns = None
-      else:
-        posPatterns = [re.compile(x) for x in pos]
-      if neg is None:
-        negPatterns = None
-      else:
-        negPatterns = [re.compile(x) for x in neg]
-
-      f = open(c.tasksFile)
-      fOut = open(newTasksFile, "wb")
-      for l in f.readlines():
-        i = l.find(":")
-        if i != -1:
-          cat = l[:i]
-          if posPatterns is not None:
-            for p in posPatterns:
-              if p.search(cat) is not None:
-                # print 'KEEP: match on %s' % cat
-                break
-            else:
-              continue
-          if negPatterns is not None:
-            skip = False
-            for p in negPatterns:
-              if p.search(cat) is not None:
-                skip = True
-                # print 'SKIP: match on %s' % cat
-                break
-            if skip:
-              continue
-
-        if PYTHON_MAJOR_VER < 3:
-          fOut.write(l)
-        else:
-          fOut.write(l.encode("utf-8"))
-      f.close()
-      fOut.close()
-
-      for c in competitors:
-        c.tasksFile = newTasksFile
+      filterTasksFile(competitors, tasksFile, newTasksFile, taskPatterns)
 
     else:
-      print("    tasks file: %s" % c.tasksFile)
+      print("    tasks file: %s" % tasksFile)
       newTasksFile = None
 
     try:
