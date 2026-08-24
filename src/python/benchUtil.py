@@ -26,6 +26,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import types
@@ -39,6 +40,37 @@ import QPSChart
 
 PERF_EXE = which("perf")
 PERF_STATS = constants.PERF_STATS
+
+
+class PerfControlResources:
+  def __init__(self, enabled):
+    self.enabled = enabled
+    self.directory = None
+    self.controlPath = None
+    self.ackPath = None
+
+  def __enter__(self):
+    if not self.enabled:
+      return self
+    if PERF_EXE is None:
+      raise RuntimeError("--perf-control requires a perf executable")
+    if osName != "linux":
+      raise RuntimeError("--perf-control is supported only on Linux")
+    self.directory = tempfile.mkdtemp(prefix="luceneutil-perf-control-")
+    try:
+      self.controlPath = os.path.join(self.directory, "control.fifo")
+      self.ackPath = os.path.join(self.directory, "ack.fifo")
+      os.mkfifo(self.controlPath)
+      os.mkfifo(self.ackPath)
+    except Exception:
+      shutil.rmtree(self.directory, ignore_errors=True)
+      self.directory = None
+      raise
+    return self
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    if self.directory is not None:
+      shutil.rmtree(self.directory, ignore_errors=True)
 
 if PERF_EXE is None:
   print("WARNING: no perf executable; will not collect aggregate CPU profiling data")
@@ -1245,105 +1277,109 @@ class RunAlgs:
     else:
       doSort = ""
 
-    command = []
-    if PERF_EXE is not None:
-      command += [PERF_EXE, "stat", "-dd", "-e", ",".join(PERF_STATS)]
-    command += c.javaCommand.split()
-
-    command += [
-      get_profiler_jvm_args(f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr", "      "),
-      "-XX:+UnlockDiagnosticVMOptions",
-      "-XX:+DebugNonSafepoints",
-      # uncomment the line below to enable remote debugging
-      # '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=localhost:7891'
-    ]
-
-    w = lambda *xs: [command.append(str(x)) for x in xs]
-    w("-classpath", cp)
-    w("perf.SearchPerfTest")
-    w("-dirImpl", c.directory)
-    w("-indexPath", c.index.getPath())
-    if c.index.facets is not None:
-      for tup in c.index.facets:
-        w("-facets", ";".join(tup))
-
-    w("-analyzer", c.analyzer)
-    w("-taskSource", c.tasksFile)
-    w("-numConcurrentQueries", c.numConcurrentQueries)
     exactPhases = c.competition.warmupTaskRepeatCount is not None
-    self.exactPhases = exactPhases
-    if exactPhases:
-      w("-warmupTaskRepeatCount", c.competition.warmupTaskRepeatCount)
-      w("-measuredTaskRepeatCount", c.competition.measuredTaskRepeatCount)
-    else:
-      w("-taskRepeatCount", c.competition.taskRepeatCount)
-    w("-field", "body")
-    w("-tasksPerCat", c.competition.taskCountPerCat)
-    if c.competition.groupByCat:
-      w("-groupByCat")
-    if c.doSort:
-      w("-sort")
-    w("-searchConcurrency", c.searchConcurrency)
-    w("-staticSeed", staticSeed)
-    w("-seed", seed)
-    w("-similarity", c.similarity)
-    w("-commit", c.commitPoint)
-    w("-hiliteImpl", c.hiliteImpl)
-    w("-log", logFile)
-    w("-topN", c.topN)
-    w("-context", c.testContext)
-    if filter is not None:
-      w("-filter", "%.2f" % filter)
-    if c.printHeap:
-      w("-printHeap")
-    if c.pk:
-      w("-pk")
-    if c.loadStoredFields:
-      w("-loadStoredFields")
-    if c.vectorDict:
-      w("-vectorDict", c.vectorDict)
-    elif c.vectorFileName is not None:
-      w("-vectorFile", c.vectorFileName)
-      w("-vectorDimension", c.vectorDimension)
-    if c.vectorScale:
-      w("-vectorScale", c.vectorScale)
-    if c.exitable:
-      w("-exitable")
-    if c.pollute:
-      w("-pollute")
+    perfControl = getattr(c.competition, "perfControl", False)
+    with PerfControlResources(perfControl) as perfControlResources:
+      command = []
+      if PERF_EXE is not None:
+        command += [PERF_EXE, "stat", "-dd", "-e", ",".join(PERF_STATS)]
+        if perfControl:
+          command += ["--delay=-1", "--control=fifo:%s,%s" % (perfControlResources.controlPath, perfControlResources.ackPath)]
+      command += c.javaCommand.split()
 
-    print("      log: %s + stdout" % logFile)
-    t0 = time.time()
-    print("      run: %s" % " ".join(command))
-    # p = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    p = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
+      command += [
+        get_profiler_jvm_args(f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr", "      "),
+        "-XX:+UnlockDiagnosticVMOptions",
+        "-XX:+DebugNonSafepoints",
+        # uncomment the line below to enable remote debugging
+        # '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=localhost:7891'
+      ]
 
-    mode = "wbu" if PYTHON_MAJOR_VER < 3 else "wb"
-    f = open(logFile + ".stdout", mode)
-    while True:
-      s = p.stdout.readline()
-      if s == b"":
-        break
-      f.write(s)
-      f.flush()
-    f.close()
-    if p.wait() != 0:
-      print()
-      print("SearchPerfTest FAILED:")
-      s = open(logFile + ".stdout")
-      for line in s.readlines():
-        print(line.rstrip())
-      raise RuntimeError("SearchPerfTest failed; see log %s.stdout" % logFile)
+      w = lambda *xs: [command.append(str(x)) for x in xs]
+      w("-classpath", cp)
+      w("perf.SearchPerfTest")
+      w("-dirImpl", c.directory)
+      w("-indexPath", c.index.getPath())
+      if c.index.facets is not None:
+        for tup in c.index.facets:
+          w("-facets", ";".join(tup))
 
-    # run(command, logFile + '.stdout', indent='      ')
-    print("      %.1f s" % (time.time() - t0))
+      w("-analyzer", c.analyzer)
+      w("-taskSource", c.tasksFile)
+      w("-numConcurrentQueries", c.numConcurrentQueries)
+      self.exactPhases = exactPhases
+      if exactPhases:
+        w("-warmupTaskRepeatCount", c.competition.warmupTaskRepeatCount)
+        w("-measuredTaskRepeatCount", c.competition.measuredTaskRepeatCount)
+      else:
+        w("-taskRepeatCount", c.competition.taskRepeatCount)
+      if perfControl:
+        w("-perfControlPath", perfControlResources.controlPath)
+        w("-perfAckPath", perfControlResources.ackPath)
+      w("-field", "body")
+      w("-tasksPerCat", c.competition.taskCountPerCat)
+      if c.competition.groupByCat:
+        w("-groupByCat")
+      if c.doSort:
+        w("-sort")
+      w("-searchConcurrency", c.searchConcurrency)
+      w("-staticSeed", staticSeed)
+      w("-seed", seed)
+      w("-similarity", c.similarity)
+      w("-commit", c.commitPoint)
+      w("-hiliteImpl", c.hiliteImpl)
+      w("-log", logFile)
+      w("-topN", c.topN)
+      w("-context", c.testContext)
+      if filter is not None:
+        w("-filter", "%.2f" % filter)
+      if c.printHeap:
+        w("-printHeap")
+      if c.pk:
+        w("-pk")
+      if c.loadStoredFields:
+        w("-loadStoredFields")
+      if c.vectorDict:
+        w("-vectorDict", c.vectorDict)
+      elif c.vectorFileName is not None:
+        w("-vectorFile", c.vectorFileName)
+        w("-vectorDimension", c.vectorDimension)
+      if c.vectorScale:
+        w("-vectorScale", c.vectorScale)
+      if c.exitable:
+        w("-exitable")
+      if c.pollute:
+        w("-pollute")
 
-    # nocommit don't wastefully load/process here too!!
-    raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
-    qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
-    print("      %.1f actual sustained QPS; %.1f CPU cores used" % (qpss[0], avg_cpu_cores))
+      print("      log: %s + stdout" % logFile)
+      t0 = time.time()
+      print("      run: %s" % " ".join(command))
+      p = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-    return logFile
+      mode = "wbu" if PYTHON_MAJOR_VER < 3 else "wb"
+      f = open(logFile + ".stdout", mode)
+      while True:
+        s = p.stdout.readline()
+        if s == b"":
+          break
+        f.write(s)
+        f.flush()
+      f.close()
+      if p.wait() != 0:
+        print()
+        print("SearchPerfTest FAILED:")
+        s = open(logFile + ".stdout")
+        for line in s.readlines():
+          print(line.rstrip())
+        raise RuntimeError("SearchPerfTest failed; see log %s.stdout" % logFile)
+
+      print("      %.1f s" % (time.time() - t0))
+
+      raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
+      qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
+      print("      %.1f actual sustained QPS; %.1f CPU cores used" % (qpss[0], avg_cpu_cores))
+
+      return logFile
 
   def getSearchLogFiles(self, id, c):  # noqa: PLR6301
     logFiles = []

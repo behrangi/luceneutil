@@ -468,6 +468,7 @@ class Competition:
     groupByCat=False,
     warmupTaskRepeatCount=None,
     measuredTaskRepeatCount=None,
+    perfControl=False,
   ):
     self.cold = cold
     self.competitors = []
@@ -510,6 +511,7 @@ class Competition:
     self.taskRepeatCount = taskRepeatCount
     self.warmupTaskRepeatCount = warmupTaskRepeatCount
     self.measuredTaskRepeatCount = measuredTaskRepeatCount
+    self.perfControl = perfControl
 
     # JVM count: how many times to run the java process for each
     # competitor.  Increase this to get more repeatable results, because each run can compile the

@@ -10,7 +10,14 @@ sourceSets {
   test.java {
     srcDir '../test'
     include 'perf/LocalTaskSourceWorkloadTest.java'
+    include 'perf/PerfControlTest.java'
   }
+}
+
+tasks.register('testPerfControl', JavaExec) {
+  dependsOn testClasses
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'perf.PerfControlTest'
 }
 
 tasks.register('testExactWorkloadPhases', JavaExec) {

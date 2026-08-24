@@ -198,6 +198,8 @@ Synthetic `PKLookup` remains independent. Its base batch count retains the exist
 
 When none of these options is supplied, historical `--warmups`/`taskRepeatCount` behavior remains unchanged. Explicit `--warmups` cannot be combined with exact-phase options. Exact phases currently require a local finite task file; remote task sources are rejected.
 
+Add `--perf-control` to an exact-phase search run to start `perf stat` with counters disabled, enable them only after warmup has completed, and disable them immediately after all measured workers finish. The benchmark waits for perf's acknowledgement at both boundaries; a control or acknowledgement failure aborts the run rather than falling back to whole-JVM measurement. This option is Linux-only, requires all three exact-phase options, and is not valid in build-only mode. Exact phases without `--perf-control` retain their normal Patch 5 behavior. Perf events remain the existing configured event list; user-configurable event arguments are not part of this option.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

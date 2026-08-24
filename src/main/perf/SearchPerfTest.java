@@ -667,12 +667,22 @@ public class SearchPerfTest {
     final boolean hasWarmupTaskRepeatCount = args.hasArg("-warmupTaskRepeatCount");
     final boolean hasMeasuredTaskRepeatCount = args.hasArg("-measuredTaskRepeatCount");
     final boolean exactPhases = hasWarmupTaskRepeatCount || hasMeasuredTaskRepeatCount;
+    final boolean hasPerfControlPath = args.hasArg("-perfControlPath");
+    final boolean hasPerfAckPath = args.hasArg("-perfAckPath");
     if (exactPhases && (!hasWarmupTaskRepeatCount || !hasMeasuredTaskRepeatCount)) {
       throw new IllegalArgumentException("exact phases require both -warmupTaskRepeatCount and -measuredTaskRepeatCount");
     }
     if (exactPhases && args.hasArg("-taskRepeatCount")) {
       throw new IllegalArgumentException("-taskRepeatCount cannot be combined with exact phases");
     }
+    if (hasPerfControlPath != hasPerfAckPath) {
+      throw new IllegalArgumentException("perf control requires both -perfControlPath and -perfAckPath");
+    }
+    if (hasPerfControlPath && exactPhases == false) {
+      throw new IllegalArgumentException("perf control requires exact workload phases");
+    }
+    final Path perfControlPath = hasPerfControlPath ? Paths.get(args.getString("-perfControlPath")) : null;
+    final Path perfAckPath = hasPerfAckPath ? Paths.get(args.getString("-perfAckPath")) : null;
 
     final int warmupTaskRepeatCount = exactPhases ? args.getInt("-warmupTaskRepeatCount") : -1;
     final int measuredTaskRepeatCount = exactPhases ? args.getInt("-measuredTaskRepeatCount") : -1;
@@ -764,10 +774,18 @@ public class SearchPerfTest {
 
       System.out.println("---- MEASURED PHASE READY ----");
       ThreadDetails measuredStartThreadDetails = new ThreadDetails();
-      measuredStartNanos = System.nanoTime();
-      measuredThreads.start();
-      measuredThreads.finish();
-      measuredEndNanos = System.nanoTime();
+      try (PerfControl perfControl = perfControlPath == null ? null : new PerfControl(perfControlPath, perfAckPath)) {
+        if (perfControl != null) {
+          perfControl.enableAndWaitForAck();
+        }
+        measuredStartNanos = System.nanoTime();
+        measuredThreads.start();
+        measuredThreads.finish();
+        measuredEndNanos = System.nanoTime();
+        if (perfControl != null) {
+          perfControl.disableAndWaitForAck();
+        }
+      }
       ThreadDetails measuredCompleteThreadDetails = new ThreadDetails();
       System.out.println("---- MEASURED PHASE COMPLETE ----");
 

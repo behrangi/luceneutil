@@ -104,8 +104,19 @@ def configureExactPhases(parser, args):
   if args.warmups is not None:
     parser.error("--warmups cannot be combined with exact workload phase options")
   if args.mode == "build":
+    if args.perf_control:
+      parser.error("--perf-control applies only when search is enabled")
     parser.error("exact workload phases apply only when search is enabled")
   return values
+
+
+def validatePerfControl(parser, args, exactPhases):
+  if not args.perf_control:
+    return
+  if exactPhases is None:
+    parser.error("--perf-control requires the complete exact workload phase configuration")
+  if args.mode == "build":
+    parser.error("--perf-control applies only when search is enabled")
 
 
 # simple example that runs benchmark with WIKI_MEDIUM source and taks files
@@ -150,10 +161,16 @@ if __name__ == "__main__":
   parser.add_argument("--warmup-repetitions", type=nonNegativeInteger, help="Exact warmup repetitions per selected base task")
   parser.add_argument("--measured-repetitions", type=positiveInteger, help="Exact measured repetitions per selected base task")
   parser.add_argument("--tasks-per-category", type=positiveInteger, help="Exact number of selected base tasks for each regular category")
+  parser.add_argument(
+    "--perf-control",
+    action="store_true",
+    help="Enable perf counters only for the exact measured phase; requires all exact workload phase options",
+  )
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
   exactPhases = configureExactPhases(parser, args)
+  validatePerfControl(parser, args, exactPhases)
   print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
@@ -167,6 +184,7 @@ if __name__ == "__main__":
       taskCountPerCat=args.tasks_per_category,
       warmupTaskRepeatCount=args.warmup_repetitions,
       measuredTaskRepeatCount=args.measured_repetitions,
+      perfControl=args.perf_control,
     )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)
