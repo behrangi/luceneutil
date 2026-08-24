@@ -141,6 +141,7 @@ def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEv
   print(f"  mode: {args.mode}")
   print(f"  source: {args.source}")
   print(f"  index: {indexPath}")
+  print(f"  seed: {comp.randomSeed}")
   print(f"  JVM iterations: {args.iterations}")
   if args.mode != "build":
     queries = "all" if requestedTaskCategories is None else ",".join(requestedTaskCategories)
@@ -198,6 +199,7 @@ if __name__ == "__main__":
   parser.add_argument("-c", "--candidate", default=os.environ.get("CANDIDATE") or "lucene_candidate", help="Path to lucene repo to be used for candidate")
   parser.add_argument("-r", "--reindex", action="store_true", help="Reindex data for candidate run")
   parser.add_argument("-iterations", "--iterations", default=20, type=int, help="Number of JVM iterations (separate JVM processes, default: 20)")
+  parser.add_argument("--seed", type=int, help="Fixed benchmark seed for reproducible task selection and ordering")
   parser.add_argument("-warmups", "--warmups", type=int, help="Legacy taskRepeatCount within each JVM (default: 20)")
   parser.add_argument("--warmup-repetitions", type=nonNegativeInteger, help="Exact warmup repetitions per selected base task")
   parser.add_argument("--measured-repetitions", type=positiveInteger, help="Exact measured repetitions per selected base task")
@@ -224,7 +226,7 @@ if __name__ == "__main__":
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.search_concurrency != 0
   if exactPhases is None:
-    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, perfEvents=perfEvents, verbose=args.verbose)
+    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, randomSeed=args.seed, perfEvents=perfEvents, verbose=args.verbose)
   else:
     comp = competition.Competition(
       verifyCounts=not countsAreCorrect,
@@ -232,6 +234,7 @@ if __name__ == "__main__":
       taskCountPerCat=args.tasks_per_category,
       warmupTaskRepeatCount=args.warmup_repetitions,
       measuredTaskRepeatCount=args.measured_repetitions,
+      randomSeed=args.seed,
       perfControl=args.perf_control,
       perfEvents=perfEvents,
       verbose=args.verbose,

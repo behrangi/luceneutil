@@ -20,6 +20,8 @@ class RunnerCompetition:
   def __init__(self, **kwargs):
     RunnerCompetition.instance = self
     self.options = kwargs
+    suppliedSeed = kwargs.get("randomSeed")
+    self.randomSeed = 0 if suppliedSeed is None else suppliedSeed
     self.competitors = []
     self.patterns = []
 

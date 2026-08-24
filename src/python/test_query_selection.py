@@ -36,8 +36,10 @@ class StubCompetition:
 class RunnerCompetition:
   instance = None
 
-  def __init__(self, **unused_kwargs):
+  def __init__(self, **kwargs):
     RunnerCompetition.instance = self
+    suppliedSeed = kwargs.get("randomSeed")
+    self.randomSeed = 0 if suppliedSeed is None else suppliedSeed
     self.competitors = []
     self.patterns = []
 
