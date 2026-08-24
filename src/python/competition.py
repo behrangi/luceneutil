@@ -473,6 +473,7 @@ class Competition:
     perfControl=False,
     perfEvents=None,
     verbose=False,
+    hardwareSummary=False,
   ):
     self.cold = cold
     self.competitors = []
@@ -518,6 +519,7 @@ class Competition:
     self.perfControl = perfControl
     self.perfEvents = None if perfEvents is None else tuple(perfEvents)
     self.verbose = verbose
+    self.hardwareSummary = hardwareSummary
 
     # JVM count: how many times to run the java process for each
     # competitor.  Increase this to get more repeatable results, because each run can compile the

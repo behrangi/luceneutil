@@ -119,6 +119,15 @@ def validatePerfControl(parser, args, exactPhases):
     parser.error("--perf-control applies only when search is enabled")
 
 
+def validateHardwareSummary(parser, args, exactPhases):
+  if not args.hardware_summary:
+    return
+  if exactPhases is None:
+    parser.error("--hardware-summary requires the complete exact workload phase configuration")
+  if args.mode == "build":
+    parser.error("--hardware-summary applies only when search is enabled")
+
+
 def parsePerfEvents(parser, value, mode):
   if value is None:
     return None
@@ -158,6 +167,8 @@ def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEv
       print(f"  tasks/category: {args.tasks_per_category}")
     print(f"  perf control: {'enabled' if args.perf_control else 'disabled'}")
     print(f"  perf events: {','.join(resolvedPerfEvents)}")
+    if args.hardware_summary:
+      print("  hardware summary: enabled")
   print()
 
 
@@ -214,11 +225,17 @@ if __name__ == "__main__":
     help="Comma-separated perf stat events for this run (default: existing constants.PERF_STATS)",
   )
   parser.add_argument("--verbose", action="store_true", help="Print detailed benchmark diagnostics to the console")
+  parser.add_argument(
+    "--hardware-summary",
+    action="store_true",
+    help="Record only measured count, elapsed time, and QPS; requires complete exact workload phases",
+  )
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
   exactPhases = configureExactPhases(parser, args)
   validatePerfControl(parser, args, exactPhases)
+  validateHardwareSummary(parser, args, exactPhases)
   perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
   if args.verbose:
     print("Running benchmarks with the following args: %s" % args)
@@ -238,6 +255,7 @@ if __name__ == "__main__":
       perfControl=args.perf_control,
       perfEvents=perfEvents,
       verbose=args.verbose,
+      hardwareSummary=args.hardware_summary,
     )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)

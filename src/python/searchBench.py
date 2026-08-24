@@ -103,6 +103,9 @@ def run(
 ):
   competitors = [challenger, base]
   verbose = getattr(base.competition, "verbose", False)
+  hardwareSummary = getattr(base.competition, "hardwareSummary", False)
+  if hardwareSummary != getattr(challenger.competition, "hardwareSummary", False):
+    raise RuntimeError("baseline and candidate must use the same hardware-summary setting")
 
   if randomSeed is None:
     raise RuntimeError("missing randomSeed")
@@ -212,13 +215,14 @@ def run(
           print()
           print("Report after iter %d:" % iter)
         # print '  results: %s' % results
-        reportWriter = sys.stdout.write if verbose else lambda unused_text: None
-        details, cmpDiffs, cmpHeap = r.simpleReport(results[base], results[challenger], "-jira" in sys.argv, "-html" in sys.argv, cmpDesc=challenger.name, baseDesc=base.name, writer=reportWriter)
-        if cmpDiffs is not None:
-          if cmpDiffs[1]:
-            raise RuntimeError("errors occurred: %s" % str(cmpDiffs))
-          if cmpDiffs[2] < requireOverlap:
-            raise RuntimeError("results differ: %s" % str(cmpDiffs))
+        if not hardwareSummary:
+          reportWriter = sys.stdout.write if verbose else lambda unused_text: None
+          details, cmpDiffs, cmpHeap = r.simpleReport(results[base], results[challenger], "-jira" in sys.argv, "-html" in sys.argv, cmpDesc=challenger.name, baseDesc=base.name, writer=reportWriter)
+          if cmpDiffs is not None:
+            if cmpDiffs[1]:
+              raise RuntimeError("errors occurred: %s" % str(cmpDiffs))
+            if cmpDiffs[2] < requireOverlap:
+              raise RuntimeError("results differ: %s" % str(cmpDiffs))
 
     finally:
       if newTasksFile is not None and os.path.exists(newTasksFile):
@@ -231,7 +235,7 @@ def run(
           print(f"\n{mode.upper()} merged search profile for {c.name}:")
           print(c.getAggregateProfilerResult(id, mode, stackSize=12)[0][1])
 
-  elif not skipReport:
+  elif not skipReport and not hardwareSummary:
     results = {}
     for c in competitors:
       results[c] = r.getSearchLogFiles(id, c)

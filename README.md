@@ -204,6 +204,8 @@ Select perf events for an individual run with `--perf-events`, for example `--pe
 
 Console output is concise by default. It shows the effective benchmark configuration, each competitor/JVM iteration, exact-phase lifecycle markers, measured elapsed time, QPS, CPU use, and log paths. Add `--verbose` to retain detailed commands, setup diagnostics, per-iteration reports, and merged JFR profile presentation. Concise mode still captures raw subprocess output and the exact executed command in the run's `.stdout` log; failures always show the exit status, log path, and a useful output tail. JFR collection is unchanged in both modes.
 
+For large hardware-characterization workloads, add `--hardware-summary` to a complete exact-phase search configuration. This retains the exact workload and perf-control boundaries but records only the completed measured-task count, measured elapsed time, QPS, and CPU use. It skips per-query result serialization, hit comparison, latency percentiles, and `out.png` generation. The option is not valid for legacy or build-only runs; omitting it preserves detailed result reporting unchanged.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

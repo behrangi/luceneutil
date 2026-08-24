@@ -22,6 +22,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.lucene.util.SameThreadExecutorService;
@@ -34,14 +35,22 @@ public class TaskThreads {
   final AtomicBoolean stop;
   final AtomicReference<SearchPerfTest.ThreadDetails> endThreadDetails;
   private long startNanos;
+  private final AtomicInteger completedTaskCount;
 
   public TaskThreads(TaskSource tasks, IndexState indexState, int numConcurrentQueries, TaskParserFactory taskParserFactory, AtomicReference<SearchPerfTest.ThreadDetails> endThreadDetails) throws IOException {
+    this(tasks, indexState, numConcurrentQueries, taskParserFactory, endThreadDetails, false);
+  }
+
+  public TaskThreads(TaskSource tasks, IndexState indexState, int numConcurrentQueries, TaskParserFactory taskParserFactory,
+                     AtomicReference<SearchPerfTest.ThreadDetails> endThreadDetails, boolean countCompletedTasks) throws IOException {
+    completedTaskCount = countCompletedTasks ? new AtomicInteger() : null;
     threads = new TaskThread[numConcurrentQueries];
     stopLatch = new CountDownLatch(numConcurrentQueries);
     stop = new AtomicBoolean(false);
     this.endThreadDetails = endThreadDetails;
     for(int threadIDX=0;threadIDX<numConcurrentQueries;threadIDX++) {
-      threads[threadIDX] = new TaskThread(startLatch, stopLatch, stop, tasks, indexState, threadIDX, taskParserFactory.getTaskParser(), endThreadDetails);
+      threads[threadIDX] = new TaskThread(startLatch, stopLatch, stop, tasks, indexState, threadIDX, taskParserFactory.getTaskParser(), endThreadDetails,
+                                          completedTaskCount);
       threads[threadIDX].start();
     }
   }
@@ -54,6 +63,21 @@ public class TaskThreads {
     stopLatch.await();
   }
 
+  public int getCompletedTaskCount() {
+    if (completedTaskCount == null) {
+      throw new IllegalStateException("completed task counting is not enabled");
+    }
+    return completedTaskCount.get();
+  }
+
+  public void requireCompletedTaskCount(int expectedTaskCount) {
+    final int actualTaskCount = getCompletedTaskCount();
+    if (actualTaskCount != expectedTaskCount) {
+      throw new IllegalStateException("measured task completion count mismatch: expected " + expectedTaskCount +
+                                      " but completed " + actualTaskCount);
+    }
+  }
+
   public void stop() throws InterruptedException {
     stop.getAndSet(true);
     for (Thread t : threads) {
@@ -61,17 +85,19 @@ public class TaskThreads {
     }
   }
 
-  private static class RunTask implements Callable<Void> {
+  static class RunTask implements Callable<Void> {
     private final TaskSource tasks;
     private final Task task;
     private final IndexState indexState;
     private final TaskParser taskParser;
+    private final AtomicInteger completedTaskCount;
     
-    public RunTask(TaskSource tasks, Task task, IndexState indexState, TaskParser taskParser) {
+    RunTask(TaskSource tasks, Task task, IndexState indexState, TaskParser taskParser, AtomicInteger completedTaskCount) {
       this.tasks = tasks;
       this.task = task;
       this.indexState = indexState;
       this.taskParser = taskParser;
+      this.completedTaskCount = completedTaskCount;
     }
 
     @Override
@@ -89,6 +115,9 @@ public class TaskThreads {
         e.printStackTrace();
       }
       task.runTimeNanos = System.nanoTime()-task.startTimeNanos;
+      if (completedTaskCount != null) {
+        completedTaskCount.incrementAndGet();
+      }
       return null;
     }
   }
@@ -103,9 +132,11 @@ public class TaskThreads {
     private final TaskParser taskParser;
     private long tasksStopNanos = -1;
     private final AtomicReference<SearchPerfTest.ThreadDetails> endThreadDetails;
+    private final AtomicInteger completedTaskCount;
 
     public TaskThread(CountDownLatch startLatch, CountDownLatch stopLatch, AtomicBoolean stop, TaskSource tasks,
-                      IndexState indexState, int threadID, TaskParser taskParser, AtomicReference<SearchPerfTest.ThreadDetails> endThreadDetails) {
+                      IndexState indexState, int threadID, TaskParser taskParser, AtomicReference<SearchPerfTest.ThreadDetails> endThreadDetails,
+                      AtomicInteger completedTaskCount) {
       this.startLatch = startLatch;
       this.stopLatch = stopLatch;
       this.stop = stop;
@@ -114,6 +145,7 @@ public class TaskThreads {
       this.threadID = threadID;
       this.taskParser = taskParser;
       this.endThreadDetails = endThreadDetails;
+      this.completedTaskCount = completedTaskCount;
     }
 
     public long getTasksStopNanos() {
@@ -153,7 +185,7 @@ public class TaskThreads {
           // each time.  or, could we somehow "fix this in post"?  are there dedup
           // tools/regexps/something?  Java mission control somehow dedups these
           // annoyingly named anon lambdas...
-          executor.submit(new RunTask(tasks, task, indexState, taskParser)).get();
+          executor.submit(new RunTask(tasks, task, indexState, taskParser, completedTaskCount)).get();
 
           task.threadID = threadID;
         }

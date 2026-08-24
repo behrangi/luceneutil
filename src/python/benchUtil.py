@@ -471,6 +471,29 @@ reLatencyAndStartTime = re.compile(r"^([\d.]+) msec @ ([\d.]+) msec$")
 reTasksWinddown = re.compile("^Start of tasks winddown: ([0-9.]+) msec$")  # noqa: RUF039
 reMeasuredPhaseElapsed = re.compile("^Measured phase elapsed: ([0-9.]+) msec$")  # noqa: RUF039
 reAvgCPUCores = re.compile("^Average CPU cores used: (-?[0-9.]+)$")  # noqa: RUF039
+reHardwareSummaryMeasuredTasks = re.compile("^Hardware summary measured tasks: ([0-9]+)$")
+reHardwareSummaryMeasuredElapsed = re.compile("^Hardware summary measured elapsed msec: ([0-9.]+)$")
+reHardwareSummaryQPS = re.compile("^Hardware summary QPS: ([0-9.Ee+-]+)$")
+
+
+def parseHardwareSummary(resultsFile):
+  values = {}
+  with open(resultsFile, encoding="utf-8") as f:
+    for line in f:
+      line = line.strip()
+      for name, pattern, convert in (
+        ("measuredTasks", reHardwareSummaryMeasuredTasks, int),
+        ("measuredElapsedMS", reHardwareSummaryMeasuredElapsed, float),
+        ("qps", reHardwareSummaryQPS, float),
+        ("avgCPUCores", reAvgCPUCores, float),
+      ):
+        match = pattern.match(line)
+        if match is not None:
+          values[name] = convert(match.group(1))
+  missing = {"measuredTasks", "measuredElapsedMS", "qps", "avgCPUCores"} - values.keys()
+  if missing:
+    raise RuntimeError("hardware summary is missing: %s" % ", ".join(sorted(missing)))
+  return values
 
 
 def parse_times_line(task, line):
@@ -1296,6 +1319,7 @@ class RunAlgs:
     exactPhases = c.competition.warmupTaskRepeatCount is not None
     perfControl = getattr(c.competition, "perfControl", False)
     perfEvents = getattr(c.competition, "perfEvents", None)
+    hardwareSummary = getattr(c.competition, "hardwareSummary", False)
     if perfEvents is not None and PERF_EXE is None:
       raise RuntimeError("--perf-events requires a perf executable")
     resolvedPerfEvents = PERF_STATS if perfEvents is None else perfEvents
@@ -1336,6 +1360,8 @@ class RunAlgs:
       if perfControl:
         w("-perfControlPath", perfControlResources.controlPath)
         w("-perfAckPath", perfControlResources.ackPath)
+      if hardwareSummary:
+        w("-hardwareSummary")
       w("-field", "body")
       w("-tasksPerCat", c.competition.taskCountPerCat)
       if c.competition.groupByCat:
@@ -1412,12 +1438,20 @@ class RunAlgs:
       if verbose:
         print("      %.1f s" % (time.time() - t0))
 
-      raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
-      qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
+      if hardwareSummary:
+        summary = parseHardwareSummary(logFile)
+        tasks_winddown_ms = summary["measuredElapsedMS"]
+        avg_cpu_cores = summary["avgCPUCores"]
+        qpss = (summary["qps"],)
+      else:
+        raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
+        qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
       if verbose:
         print("      %.1f actual sustained QPS; %.1f CPU cores used" % (qpss[0], avg_cpu_cores))
       else:
         if exactPhases:
+          if hardwareSummary:
+            print(f"  measured tasks: {summary['measuredTasks']}")
           print(f"  measured elapsed: {tasks_winddown_ms / 1000.0:.3f} s")
         print(f"  QPS: {qpss[0]:.1f}")
         print(f"  CPU cores used: {avg_cpu_cores:.1f}")

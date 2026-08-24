@@ -48,7 +48,13 @@ class LocalTaskSource implements TaskSource {
     }
 
     LocalTaskSource newTaskSource(int taskRepeatCount, long phaseSeed, boolean groupByCat) {
-      return new LocalTaskSource(prototypes, taskRepeatCount, new Random(phaseSeed), groupByCat);
+      return newTaskSource(taskRepeatCount, phaseSeed, groupByCat, false);
+    }
+
+    LocalTaskSource newTaskSource(int taskRepeatCount, long phaseSeed, boolean groupByCat,
+                                  boolean releaseTasksOnDispatch) {
+      return new LocalTaskSource(prototypes, taskRepeatCount, new Random(phaseSeed), groupByCat,
+                                 releaseTasksOnDispatch);
     }
 
     List<Task> getPrototypes() {
@@ -57,6 +63,7 @@ class LocalTaskSource implements TaskSource {
   }
 
   private final List<Task> tasks;
+  private final boolean releaseTasksOnDispatch;
   private final AtomicInteger nextTask = new AtomicInteger();
   private double pctNextPrint;
   private int taskCountNextPrint;
@@ -66,7 +73,7 @@ class LocalTaskSource implements TaskSource {
                          boolean doPKLookup, boolean groupByCat) throws IOException, ParseException {
 
     this(loadWorkload(indexState, tasksFile, taskParser, staticRandom, numTaskPerCat, doPKLookup, false).prototypes,
-         taskRepeatCount, random, groupByCat);
+         taskRepeatCount, random, groupByCat, false);
   }
 
   static Workload loadWorkload(IndexState indexState, String tasksFile, TaskParser taskParser,
@@ -107,7 +114,9 @@ class LocalTaskSource implements TaskSource {
     return new Workload(prunedTasks);
   }
 
-  private LocalTaskSource(List<Task> prototypes, int taskRepeatCount, Random random, boolean groupByCat) {
+  private LocalTaskSource(List<Task> prototypes, int taskRepeatCount, Random random, boolean groupByCat,
+                          boolean releaseTasksOnDispatch) {
+    this.releaseTasksOnDispatch = releaseTasksOnDispatch;
     tasks = new ArrayList<>();
     if (groupByCat) {
       repeatTasksGrouped(prototypes, taskRepeatCount, random);
@@ -148,6 +157,10 @@ class LocalTaskSource implements TaskSource {
   @Override
   public List<Task> getAllTasks() {
     return tasks;
+  }
+
+  int getTaskCount() {
+    return tasks.size();
   }
 
   static List<Task> pruneTasks(List<Task> tasks, int numTaskPerCat, boolean requireExactTasksPerCategory) {
@@ -197,7 +210,13 @@ class LocalTaskSource implements TaskSource {
     if (next >= tasks.size()) {
       return null;
     }
-    return tasks.get(next);
+    final Task task = tasks.get(next);
+    if (releaseTasksOnDispatch) {
+      // nextTask assigns every slot to at most one caller, so releasing this
+      // source-owned reference cannot affect ordering or another worker.
+      tasks.set(next, null);
+    }
+    return task;
   }
 
   @Override

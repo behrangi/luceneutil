@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 final class LocalTaskSourceWorkloadTest {
   private static final long WARMUP_SEED = 17L;
@@ -15,6 +16,8 @@ final class LocalTaskSourceWorkloadTest {
     testZeroWarmupStillAllowsMeasuredExecution();
     testPositiveRepetitionsRejectZeroPrototypes();
     testExactTasksPerCategoryRejectsInsufficientTasks();
+    testSummarySourceReleasesCompletedTasksAndCountsSuccesses();
+    testSummaryCompletionMismatchFails();
   }
 
   private static void testExactCountsFreshObjectsAndPrototypePreservation() throws Exception {
@@ -76,6 +79,42 @@ final class LocalTaskSourceWorkloadTest {
     } catch (IllegalArgumentException expected) {
       if (expected.getMessage().contains("task file contains only 2") == false) {
         throw new AssertionError("unexpected validation message: " + expected.getMessage());
+      }
+    }
+  }
+
+  private static void testSummarySourceReleasesCompletedTasksAndCountsSuccesses() throws Exception {
+    LocalTaskSource.Workload workload = new LocalTaskSource.Workload(prototypes());
+    LocalTaskSource measured = workload.newTaskSource(5, MEASURED_SEED, false, true);
+    AtomicInteger completed = new AtomicInteger();
+
+    Task task;
+    while ((task = measured.nextTask()) != null) {
+      new TaskThreads.RunTask(measured, task, null, null, completed).call();
+    }
+
+    assertEquals(10, measured.getTaskCount(), "expected measured task count");
+    assertEquals(10, completed.get(), "completed measured task count");
+    for (Task released : measured.getAllTasks()) {
+      if (released != null) {
+        throw new AssertionError("completed task source reference was retained");
+      }
+    }
+  }
+
+  private static void testSummaryCompletionMismatchFails() {
+    TaskThreads threads;
+    try {
+      threads = new TaskThreads(null, null, 0, null, null, true);
+    } catch (IOException impossible) {
+      throw new AssertionError(impossible);
+    }
+    try {
+      threads.requireCompletedTaskCount(1);
+      throw new AssertionError("expected measured completion mismatch");
+    } catch (IllegalStateException expected) {
+      if (expected.getMessage().contains("expected 1 but completed 0") == false) {
+        throw new AssertionError("unexpected mismatch message: " + expected.getMessage());
       }
     }
   }

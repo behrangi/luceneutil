@@ -667,6 +667,7 @@ public class SearchPerfTest {
     final boolean hasWarmupTaskRepeatCount = args.hasArg("-warmupTaskRepeatCount");
     final boolean hasMeasuredTaskRepeatCount = args.hasArg("-measuredTaskRepeatCount");
     final boolean exactPhases = hasWarmupTaskRepeatCount || hasMeasuredTaskRepeatCount;
+    final boolean hardwareSummary = args.getFlag("-hardwareSummary");
     final boolean hasPerfControlPath = args.hasArg("-perfControlPath");
     final boolean hasPerfAckPath = args.hasArg("-perfAckPath");
     if (exactPhases && (!hasWarmupTaskRepeatCount || !hasMeasuredTaskRepeatCount)) {
@@ -674,6 +675,9 @@ public class SearchPerfTest {
     }
     if (exactPhases && args.hasArg("-taskRepeatCount")) {
       throw new IllegalArgumentException("-taskRepeatCount cannot be combined with exact phases");
+    }
+    if (hardwareSummary && exactPhases == false) {
+      throw new IllegalArgumentException("-hardwareSummary requires exact workload phases");
     }
     if (hasPerfControlPath != hasPerfAckPath) {
       throw new IllegalArgumentException("perf control requires both -perfControlPath and -perfAckPath");
@@ -753,6 +757,8 @@ public class SearchPerfTest {
     final ThreadDetails endThreadDetails;
     final double avgCPUCount;
     final double elapsedMS;
+    int completedMeasuredTasks = -1;
+    int expectedMeasuredTasks = -1;
 
     if (exactPhases) {
       final long warmupPhaseSeed = randomSeed ^ 0x5741524d55504cL;
@@ -767,9 +773,13 @@ public class SearchPerfTest {
         warmupThreads.finish();
       }
 
-      measuredTasks = exactWorkload.newTaskSource(measuredTaskRepeatCount, measuredPhaseSeed, groupByCat);
+      LocalTaskSource localMeasuredTasks = exactWorkload.newTaskSource(measuredTaskRepeatCount, measuredPhaseSeed, groupByCat,
+                                                                       hardwareSummary);
+      measuredTasks = localMeasuredTasks;
+      expectedMeasuredTasks = localMeasuredTasks.getTaskCount();
       AtomicReference<ThreadDetails> measuredEndThreadDetailsRef = new AtomicReference<>();
-      TaskThreads measuredThreads = new TaskThreads(measuredTasks, indexState, numConcurrentQueries, taskParserFactory, measuredEndThreadDetailsRef);
+      TaskThreads measuredThreads = new TaskThreads(measuredTasks, indexState, numConcurrentQueries, taskParserFactory,
+                                                    measuredEndThreadDetailsRef, hardwareSummary);
       Thread.sleep(10);
 
       System.out.println("---- MEASURED PHASE READY ----");
@@ -782,11 +792,17 @@ public class SearchPerfTest {
         measuredThreads.start();
         measuredThreads.finish();
         measuredEndNanos = System.nanoTime();
+        if (hardwareSummary) {
+          completedMeasuredTasks = measuredThreads.getCompletedTaskCount();
+        }
         if (perfControl != null) {
           perfControl.disableAndWaitForAck();
         }
       }
       ThreadDetails measuredCompleteThreadDetails = new ThreadDetails();
+      if (hardwareSummary) {
+        measuredThreads.requireCompletedTaskCount(expectedMeasuredTasks);
+      }
       System.out.println("---- MEASURED PHASE COMPLETE ----");
 
       endThreadDetails = measuredEndThreadDetailsRef.get();
@@ -824,11 +840,17 @@ public class SearchPerfTest {
       }
     }
 
-    final List<Task> allTasks = measuredTasks.getAllTasks();
+    final List<Task> allTasks = hardwareSummary ? null : measuredTasks.getAllTasks();
 
     PrintStream out = new PrintStream(logFile);
 
-    if (allTasks != null) {
+    if (hardwareSummary) {
+      final double qps = completedMeasuredTasks / (elapsedMS / 1000.0);
+      out.println("Hardware summary measured tasks: " + completedMeasuredTasks);
+      out.println("Hardware summary measured elapsed msec: " + elapsedMS);
+      out.println("Hardware summary QPS: " + qps);
+      out.println("Average CPU cores used: " + avgCPUCount);
+    } else if (allTasks != null) {
       // Tasks were local: verify checksums:
 
       // indexState.setDocIDToID();
