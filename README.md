@@ -169,6 +169,18 @@ Category names are exact, case-sensitive literals. Whitespace around comma-separ
 
 `--mode build` accepts only `--queries all`, because query selection applies only when search is enabled. Build-only mode does not inspect or filter the search task file.
 
+### Search concurrency controls
+
+Two independent forms of search concurrency can be configured explicitly:
+
+```bash
+python src/python/localrun.py -source wikimediumall --query-concurrency 4 --search-concurrency 0
+```
+
+`--query-concurrency` controls how many independent top-level query tasks are in flight and must be at least 1. When omitted, the existing `SEARCH_NUM_CONCURRENT_QUERIES` default is preserved. `--search-concurrency` controls Lucene's internal workers for each individual search; `0` disables internal search concurrency and `-1` retains the existing use-all-available-cores behavior. The previous `--searchConcurrency` spelling remains accepted as an alias.
+
+These options change only scheduling and parallelism. They do not change query selection, PK lookup enablement, task repetitions, tasks per category, JVM iterations, the selected index, or the total logical workload.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

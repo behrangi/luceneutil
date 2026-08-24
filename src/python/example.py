@@ -22,6 +22,20 @@ import re
 import competition
 
 
+def positiveInteger(value):
+  value = int(value)
+  if value < 1:
+    raise argparse.ArgumentTypeError("must be at least 1")
+  return value
+
+
+def searchConcurrency(value):
+  value = int(value)
+  if value < -1:
+    raise argparse.ArgumentTypeError("must be -1 or greater")
+  return value
+
+
 def configure_mode(comp, mode):
   if mode == "build":
     comp.skipSearch()
@@ -92,7 +106,20 @@ if __name__ == "__main__":
     default="all",
     help="Query categories: all, one exact category, or a comma-separated list such as HighTerm,AndHighHigh,HighPhrase",
   )
-  parser.add_argument("-searchConcurrency", "--searchConcurrency", default="-1", type=int, help="Search concurrency, 0 for disabled, -1 for using all cores")
+  parser.add_argument(
+    "--query-concurrency",
+    type=positiveInteger,
+    help="Number of simultaneous top-level independent query tasks (default: SEARCH_NUM_CONCURRENT_QUERIES)",
+  )
+  parser.add_argument(
+    "-searchConcurrency",
+    "--searchConcurrency",
+    "--search-concurrency",
+    dest="search_concurrency",
+    default=-1,
+    type=searchConcurrency,
+    help="Lucene internal search workers per query: 0 disables concurrency, -1 uses all available cores (default: -1)",
+  )
   parser.add_argument("-b", "--baseline", default=os.environ.get("BASELINE") or "lucene_baseline", help="Path to lucene repo to be used for baseline")
   parser.add_argument("-c", "--candidate", default=os.environ.get("CANDIDATE") or "lucene_candidate", help="Path to lucene repo to be used for candidate")
   parser.add_argument("-r", "--reindex", action="store_true", help="Reindex data for candidate run")
@@ -104,7 +131,7 @@ if __name__ == "__main__":
   print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
-  countsAreCorrect = args.searchConcurrency != 0
+  countsAreCorrect = args.search_concurrency != 0
   comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups)
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)
@@ -129,7 +156,17 @@ if __name__ == "__main__":
   )
 
   # create a competitor named baseline with sources in the ../trunk folder
-  comp.competitor("baseline", args.baseline, index=index, searchConcurrency=args.searchConcurrency, pk=includePK)
+  if args.query_concurrency is None:
+    comp.competitor("baseline", args.baseline, index=index, searchConcurrency=args.search_concurrency, pk=includePK)
+  else:
+    comp.competitor(
+      "baseline",
+      args.baseline,
+      index=index,
+      numConcurrentQueries=args.query_concurrency,
+      searchConcurrency=args.search_concurrency,
+      pk=includePK,
+    )
 
   # use the same index as baseline unless --reindex was passed.
   # create a competitor named my_modified_version (or provided candidate name) with sources in the ../patch folder
@@ -155,7 +192,17 @@ if __name__ == "__main__":
         ("sortedset:RandomLabel", "RandomLabel"),
       ),
     )
-  comp.competitor("my_modified_version", args.candidate, index=candidate_index, searchConcurrency=args.searchConcurrency, pk=includePK)
+  if args.query_concurrency is None:
+    comp.competitor("my_modified_version", args.candidate, index=candidate_index, searchConcurrency=args.search_concurrency, pk=includePK)
+  else:
+    comp.competitor(
+      "my_modified_version",
+      args.candidate,
+      index=candidate_index,
+      numConcurrentQueries=args.query_concurrency,
+      searchConcurrency=args.search_concurrency,
+      pk=includePK,
+    )
 
   # start the benchmark - this can take long depending on your index and machines
   comp.benchmark("baseline_vs_patch")
