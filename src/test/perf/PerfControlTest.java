@@ -27,13 +27,17 @@ final class PerfControlTest {
   public static void main(String[] args) throws Exception {
     testEnableDisableProtocolAndFlush();
     testUnexpectedAcknowledgementFails();
+    testNonNullFrameTerminatorFails();
     testMissingAcknowledgementFails();
     testAcknowledgementTimeout();
   }
 
   private static void testEnableDisableProtocolAndFlush() throws Exception {
     FlushTrackingWriter commands = new FlushTrackingWriter();
-    try (PerfControl control = new PerfControl(commands, new StringReader("ack\nack\n"))) {
+    // perf writes sizeof("ack\n"), including the trailing NUL, for every acknowledgement.
+    // The two frames are intentional: a line-only reader leaves the first NUL in front of
+    // the disable acknowledgement and makes the second response appear to be "ack" in logs.
+    try (PerfControl control = new PerfControl(commands, new StringReader("ack\n\0ack\n\0"))) {
       control.enableAndWaitForAck();
       assertEquals("enable\n", commands.toString(), "enable command");
       assertEquals(1, commands.flushCount, "enable flush count");
@@ -45,7 +49,11 @@ final class PerfControlTest {
   }
 
   private static void testUnexpectedAcknowledgementFails() throws Exception {
-    assertAckFailure("unexpected\n", "received \"unexpected\"");
+    assertAckFailure("unexpected\n\0", "received \"unexpected\\u0000\" (line length=10)");
+  }
+
+  private static void testNonNullFrameTerminatorFails() throws Exception {
+    assertAckFailure("ack\nX", "received \"ackX\" (line length=3)");
   }
 
   private static void testMissingAcknowledgementFails() throws Exception {

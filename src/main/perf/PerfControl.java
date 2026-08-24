@@ -82,14 +82,18 @@ final class PerfControl implements AutoCloseable {
     control.write(command);
     control.write('\n');
     control.flush();
-    String response = readAcknowledgement(command);
-    if ("ack".equals(response) == false) {
-      throw new IOException("perf did not acknowledge " + command + " command; received " + (response == null ? "end of stream" : "\"" + response + "\""));
+    Acknowledgement response = readAcknowledgement(command);
+    if ("ack".equals(response.line) == false || response.frameTerminator != 0) {
+      throw new IOException("perf did not acknowledge " + command + " command; received " + describe(response));
     }
   }
 
-  private String readAcknowledgement(String command) throws IOException {
-    FutureTask<String> read = new FutureTask<>(acknowledgement::readLine);
+  private Acknowledgement readAcknowledgement(String command) throws IOException {
+    FutureTask<Acknowledgement> read = new FutureTask<>(() -> {
+      String line = acknowledgement.readLine();
+      int frameTerminator = line == null ? -1 : acknowledgement.read();
+      return new Acknowledgement(line, frameTerminator);
+    });
     Thread readerThread = new Thread(read, "perf-ack-reader");
     readerThread.setDaemon(true);
     readerThread.start();
@@ -113,7 +117,43 @@ final class PerfControl implements AutoCloseable {
     }
   }
 
-  private void abortAcknowledgementRead(FutureTask<String> read, Thread readerThread, IOException failure) {
+  private static String describe(Acknowledgement acknowledgement) {
+    if (acknowledgement.line == null) {
+      return "end of stream";
+    }
+    StringBuilder description = new StringBuilder();
+    description.append('"');
+    acknowledgement.line.codePoints().forEach(codePoint -> appendEscaped(description, codePoint));
+    if (acknowledgement.frameTerminator >= 0) {
+      appendEscaped(description, acknowledgement.frameTerminator);
+    } else {
+      description.append("<EOF>");
+    }
+    description.append("\" (line length=").append(acknowledgement.line.length()).append(')');
+    return description.toString();
+  }
+
+  private static void appendEscaped(StringBuilder description, int codePoint) {
+    if (codePoint >= 0x20 && codePoint <= 0x7e && codePoint != '\\' && codePoint != '"') {
+      description.appendCodePoint(codePoint);
+    } else if (codePoint <= 0xffff) {
+      description.append(String.format("\\u%04x", codePoint));
+    } else {
+      description.append(String.format("\\U%08x", codePoint));
+    }
+  }
+
+  private static final class Acknowledgement {
+    final String line;
+    final int frameTerminator;
+
+    Acknowledgement(String line, int frameTerminator) {
+      this.line = line;
+      this.frameTerminator = frameTerminator;
+    }
+  }
+
+  private void abortAcknowledgementRead(FutureTask<?> read, Thread readerThread, IOException failure) {
     read.cancel(true);
     try {
       acknowledgement.close();
