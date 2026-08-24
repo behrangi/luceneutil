@@ -54,11 +54,21 @@ class PerfControlTest(unittest.TestCase):
     competition = self.run_runner(*self.exact_arguments(), "--perf-control")
     self.assertTrue(competition.options["perfControl"])
 
+  def test_perf_events_are_parsed_without_deduplication(self):
+    competition = self.run_runner("--perf-events", "cycles, instructions,cycles")
+    self.assertEqual(("cycles", "instructions", "cycles"), competition.options["perfEvents"])
+
+  def test_empty_perf_event_is_rejected(self):
+    self.assert_cli_rejected(("--perf-events", "cycles,,instructions"), "contains an empty event name")
+
+  def test_build_mode_rejects_perf_events(self):
+    self.assert_cli_rejected(("--mode", "build", "--perf-events", "cycles"), "--perf-events applies only when search is enabled")
+
   def test_command_variants_and_endpoint_cleanup(self):
     bench_util = self.load_bench_util()
     legacy = self.run_command(bench_util, exact=False, controlled=False)
     exact = self.run_command(bench_util, exact=True, controlled=False)
-    controlled = self.run_command(bench_util, exact=True, controlled=True)
+    controlled = self.run_command(bench_util, exact=True, controlled=True, events=("cycles", "instructions"))
 
     for command in (legacy, exact):
       self.assertNotIn("--delay=-1", command)
@@ -69,11 +79,34 @@ class PerfControlTest(unittest.TestCase):
     self.assertIn("-taskRepeatCount", legacy)
     self.assertIn("-warmupTaskRepeatCount", exact)
     self.assertIn("--delay=-1", controlled)
+    self.assertEqual("cycles,instructions", controlled[controlled.index("-e") + 1])
     control_argument = next(argument for argument in controlled if argument.startswith("--control=fifo:"))
     control_path, ack_path = control_argument.removeprefix("--control=fifo:").split(",")
     self.assertEqual(control_path, controlled[controlled.index("-perfControlPath") + 1])
     self.assertEqual(ack_path, controlled[controlled.index("-perfAckPath") + 1])
     self.assertFalse(os.path.exists(os.path.dirname(control_path)))
+
+  def test_omitted_perf_events_preserve_existing_defaults(self):
+    bench_util = self.load_bench_util()
+    command = self.run_command(bench_util, exact=False, controlled=False)
+    self.assertEqual(",".join(bench_util.PERF_STATS), command[command.index("-e") + 1])
+
+  def test_explicit_perf_events_replace_defaults_for_legacy_search(self):
+    bench_util = self.load_bench_util()
+    command = self.run_command(bench_util, exact=False, controlled=False, events=("cycles", "instructions"))
+    self.assertEqual("cycles,instructions", command[command.index("-e") + 1])
+    self.assertNotIn("--delay=-1", command)
+
+  def test_explicit_perf_events_require_perf_executable(self):
+    bench_util = self.load_bench_util()
+    with self.assertRaisesRegex(RuntimeError, "--perf-events requires a perf executable"):
+      self.run_command(bench_util, exact=False, controlled=False, events=("cycles", "instructions"), perf_exe=None)
+
+  def test_omitted_perf_events_preserve_java_only_fallback(self):
+    bench_util = self.load_bench_util()
+    command = self.run_command(bench_util, exact=False, controlled=False, perf_exe=None)
+    self.assertEqual("java", command[0])
+    self.assertNotIn("perf", command)
 
   def test_java_boundary_order(self):
     source = (Path(__file__).parents[2] / "src/main/perf/SearchPerfTest.java").read_text(encoding="utf-8")
@@ -89,7 +122,7 @@ class PerfControlTest(unittest.TestCase):
     ]
     self.assertEqual(positions, sorted(positions))
 
-  def run_command(self, bench_util, exact, controlled):
+  def run_command(self, bench_util, exact, controlled, events=None, perf_exe="/usr/bin/perf"):
     class Process:
       stdout = io.BytesIO()
 
@@ -103,6 +136,7 @@ class PerfControlTest(unittest.TestCase):
       warmupTaskRepeatCount=1 if exact else None,
       measuredTaskRepeatCount=2 if exact else None,
       perfControl=controlled,
+      perfEvents=events,
     )
     competitor = types.SimpleNamespace(
       checkout="checkout", name="candidate", doSort=False, javaCommand="java", directory="MMapDirectory",
@@ -120,7 +154,7 @@ class PerfControlTest(unittest.TestCase):
     with (
       tempfile.TemporaryDirectory() as directory,
       mock.patch.object(bench_util.constants, "LOGS_DIR", directory),
-      mock.patch.object(bench_util, "PERF_EXE", "/usr/bin/perf"),
+      mock.patch.object(bench_util, "PERF_EXE", perf_exe),
       mock.patch.object(bench_util, "osName", "linux"),
       mock.patch.object(bench_util.os, "mkfifo", side_effect=make_fifo, create=True),
       mock.patch.object(bench_util, "getClassPath", return_value=[]),

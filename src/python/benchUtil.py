@@ -1279,10 +1279,14 @@ class RunAlgs:
 
     exactPhases = c.competition.warmupTaskRepeatCount is not None
     perfControl = getattr(c.competition, "perfControl", False)
+    perfEvents = getattr(c.competition, "perfEvents", None)
+    if perfEvents is not None and PERF_EXE is None:
+      raise RuntimeError("--perf-events requires a perf executable")
+    resolvedPerfEvents = PERF_STATS if perfEvents is None else perfEvents
     with PerfControlResources(perfControl) as perfControlResources:
       command = []
       if PERF_EXE is not None:
-        command += [PERF_EXE, "stat", "-dd", "-e", ",".join(PERF_STATS)]
+        command += [PERF_EXE, "stat", "-dd", "-e", ",".join(resolvedPerfEvents)]
         if perfControl:
           command += ["--delay=-1", "--control=fifo:%s,%s" % (perfControlResources.controlPath, perfControlResources.ackPath)]
       command += c.javaCommand.split()

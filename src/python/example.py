@@ -119,6 +119,20 @@ def validatePerfControl(parser, args, exactPhases):
     parser.error("--perf-control applies only when search is enabled")
 
 
+def parsePerfEvents(parser, value, mode):
+  if value is None:
+    return None
+  if mode == "build":
+    parser.error("--perf-events applies only when search is enabled")
+  events = []
+  for entry in value.split(","):
+    event = entry.strip()
+    if event == "":
+      parser.error("--perf-events contains an empty event name")
+    events.append(event)
+  return tuple(events)
+
+
 # simple example that runs benchmark with WIKI_MEDIUM source and taks files
 # Baseline here is ../lucene_baseline versus ../lucene_candidate
 if __name__ == "__main__":
@@ -166,17 +180,22 @@ if __name__ == "__main__":
     action="store_true",
     help="Enable perf counters only for the exact measured phase; requires all exact workload phase options",
   )
+  parser.add_argument(
+    "--perf-events",
+    help="Comma-separated perf stat events for this run (default: existing constants.PERF_STATS)",
+  )
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
   exactPhases = configureExactPhases(parser, args)
   validatePerfControl(parser, args, exactPhases)
+  perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
   print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.search_concurrency != 0
   if exactPhases is None:
-    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups)
+    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, perfEvents=perfEvents)
   else:
     comp = competition.Competition(
       verifyCounts=not countsAreCorrect,
@@ -185,6 +204,7 @@ if __name__ == "__main__":
       warmupTaskRepeatCount=args.warmup_repetitions,
       measuredTaskRepeatCount=args.measured_repetitions,
       perfControl=args.perf_control,
+      perfEvents=perfEvents,
     )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)
