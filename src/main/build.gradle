@@ -6,7 +6,6 @@ sourceSets {
   main.java {
     srcDir '.'
     include 'perf/**'
-    include 'knn/**'
   }
   test.java {
     srcDir '../test'
