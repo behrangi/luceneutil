@@ -40,6 +40,22 @@ import static perf.TaskParser.parseCategory;
 
 // Serves up tasks from locally loaded list:
 class LocalTaskSource implements TaskSource {
+  static final class Workload {
+    private final List<Task> prototypes;
+
+    Workload(List<Task> prototypes) {
+      this.prototypes = List.copyOf(prototypes);
+    }
+
+    LocalTaskSource newTaskSource(int taskRepeatCount, long phaseSeed, boolean groupByCat) {
+      return new LocalTaskSource(prototypes, taskRepeatCount, new Random(phaseSeed), groupByCat);
+    }
+
+    List<Task> getPrototypes() {
+      return prototypes;
+    }
+  }
+
   private final List<Task> tasks;
   private final AtomicInteger nextTask = new AtomicInteger();
   private double pctNextPrint;
@@ -49,9 +65,17 @@ class LocalTaskSource implements TaskSource {
                          Random staticRandom, Random random, int numTaskPerCat, int taskRepeatCount,
                          boolean doPKLookup, boolean groupByCat) throws IOException, ParseException {
 
+    this(loadWorkload(indexState, tasksFile, taskParser, staticRandom, numTaskPerCat, doPKLookup, false).prototypes,
+         taskRepeatCount, random, groupByCat);
+  }
+
+  static Workload loadWorkload(IndexState indexState, String tasksFile, TaskParser taskParser,
+                               Random staticRandom, int numTaskPerCat, boolean doPKLookup,
+                               boolean requireExactTasksPerCategory) throws IOException, ParseException {
+
     final List<Task> loadedTasks = loadTasks(tasksFile, taskParser);
     Collections.shuffle(loadedTasks, staticRandom);
-    final List<Task> prunedTasks = pruneTasks(loadedTasks, numTaskPerCat);
+    final List<Task> prunedTasks = pruneTasks(loadedTasks, numTaskPerCat, requireExactTasksPerCategory);
 
     // Add PK tasks
     //System.out.println("WARNING: skip PK tasks");
@@ -80,11 +104,15 @@ class LocalTaskSource implements TaskSource {
       }
       */
     }
+    return new Workload(prunedTasks);
+  }
+
+  private LocalTaskSource(List<Task> prototypes, int taskRepeatCount, Random random, boolean groupByCat) {
     tasks = new ArrayList<>();
     if (groupByCat) {
-      repeatTasksGrouped(prunedTasks, taskRepeatCount, random);
+      repeatTasksGrouped(prototypes, taskRepeatCount, random);
     } else {
-      repeatTasksShuffled(prunedTasks, taskRepeatCount, random);
+      repeatTasksShuffled(prototypes, taskRepeatCount, random);
     }
     pctNextPrint = 5d;
     taskCountNextPrint = (int) ((pctNextPrint/100) * tasks.size());
@@ -96,9 +124,10 @@ class LocalTaskSource implements TaskSource {
 
   private void repeatTasksShuffled(List<Task> someTasks, int taskRepeatCount, Random random) {
     // Copy the pruned tasks multiple times, shuffling the order each time:
+    final List<Task> orderedTasks = new ArrayList<>(someTasks);
     for(int iter = 0; iter < taskRepeatCount; iter++) {
-      Collections.shuffle(someTasks, random);
-      for(Task task : someTasks) {
+      Collections.shuffle(orderedTasks, random);
+      for(Task task : orderedTasks) {
         tasks.add(task.clone());
       }
     }
@@ -121,7 +150,7 @@ class LocalTaskSource implements TaskSource {
     return tasks;
   }
 
-  private static List<Task> pruneTasks(List<Task> tasks, int numTaskPerCat) {
+  static List<Task> pruneTasks(List<Task> tasks, int numTaskPerCat, boolean requireExactTasksPerCategory) {
     final Map<String,Integer> catCounts = new HashMap<String,Integer>();
     final List<Task> newTasks = new ArrayList<Task>();
     for(Task task : tasks) {
@@ -141,6 +170,15 @@ class LocalTaskSource implements TaskSource {
       catCount++;
       catCounts.put(cat, catCount);
       newTasks.add(task);
+    }
+
+    if (requireExactTasksPerCategory) {
+      for (Map.Entry<String,Integer> entry : catCounts.entrySet()) {
+        if (entry.getValue() < numTaskPerCat) {
+          throw new IllegalArgumentException("exact phase requested " + numTaskPerCat + " tasks for category " + entry.getKey() +
+                                             " but task file contains only " + entry.getValue());
+        }
+      }
     }
 
     return newTasks;

@@ -664,10 +664,34 @@ public class SearchPerfTest {
     TaskParserFactory taskParserFactory =
       new TaskParserFactory(indexState, fieldName, a, "body", topN, random, vectorDictionary, vectorFilePath, vectorDimension, doStoredLoads, testContext);
 
-    final TaskSource tasks;
+    final boolean hasWarmupTaskRepeatCount = args.hasArg("-warmupTaskRepeatCount");
+    final boolean hasMeasuredTaskRepeatCount = args.hasArg("-measuredTaskRepeatCount");
+    final boolean exactPhases = hasWarmupTaskRepeatCount || hasMeasuredTaskRepeatCount;
+    if (exactPhases && (!hasWarmupTaskRepeatCount || !hasMeasuredTaskRepeatCount)) {
+      throw new IllegalArgumentException("exact phases require both -warmupTaskRepeatCount and -measuredTaskRepeatCount");
+    }
+    if (exactPhases && args.hasArg("-taskRepeatCount")) {
+      throw new IllegalArgumentException("-taskRepeatCount cannot be combined with exact phases");
+    }
+
+    final int warmupTaskRepeatCount = exactPhases ? args.getInt("-warmupTaskRepeatCount") : -1;
+    final int measuredTaskRepeatCount = exactPhases ? args.getInt("-measuredTaskRepeatCount") : -1;
+    if (exactPhases && warmupTaskRepeatCount < 0) {
+      throw new IllegalArgumentException("-warmupTaskRepeatCount must be at least 0");
+    }
+    if (exactPhases && measuredTaskRepeatCount < 1) {
+      throw new IllegalArgumentException("-measuredTaskRepeatCount must be at least 1");
+    }
+    final TaskSource legacyTasks;
+    final LocalTaskSource.Workload exactWorkload;
+    final int numTaskPerCat;
+    final boolean groupByCat;
 
     try (TaskParser taskParser = taskParserFactory.getTaskParser()) {
       if (tasksFile.startsWith("server:")) {
+        if (exactPhases) {
+          throw new IllegalArgumentException("exact workload phases do not support remote task sources");
+        }
         // TODO: what is this "server:" tasks source!?  does it still work?
         int idx = tasksFile.indexOf(':', 8);
         if (idx == -1) {
@@ -678,15 +702,30 @@ public class SearchPerfTest {
         RemoteTaskSource remoteTasks = new RemoteTaskSource(iface, port, numConcurrentQueries, taskParser);
 
         // nocommit must stop thread?
-        tasks = remoteTasks;
+        legacyTasks = remoteTasks;
+        exactWorkload = null;
+        numTaskPerCat = -1;
+        groupByCat = false;
       } else {
         // Load the tasks from a file:
-        final int taskRepeatCount = args.getInt("-taskRepeatCount");
-        final int numTaskPerCat = args.getInt("-tasksPerCat");
-        final boolean groupByCat = args.getFlag("-groupByCat");
-        tasks = new LocalTaskSource(indexState, tasksFile, taskParser, staticRandom, random,
-                                    numTaskPerCat, taskRepeatCount, doPKLookup, groupByCat);
-        System.out.println("Task repeat count " + taskRepeatCount);
+        numTaskPerCat = args.getInt("-tasksPerCat");
+        groupByCat = args.getFlag("-groupByCat");
+        if (exactPhases) {
+          if (numTaskPerCat < 1) {
+            throw new IllegalArgumentException("-tasksPerCat must be at least 1 in exact phase mode");
+          }
+          exactWorkload = LocalTaskSource.loadWorkload(indexState, tasksFile, taskParser, staticRandom,
+                                                       numTaskPerCat, doPKLookup, true);
+          legacyTasks = null;
+          System.out.println("Warmup task repeat count " + warmupTaskRepeatCount);
+          System.out.println("Measured task repeat count " + measuredTaskRepeatCount);
+        } else {
+          final int taskRepeatCount = args.getInt("-taskRepeatCount");
+          legacyTasks = new LocalTaskSource(indexState, tasksFile, taskParser, staticRandom, random,
+                                            numTaskPerCat, taskRepeatCount, doPKLookup, groupByCat);
+          exactWorkload = null;
+          System.out.println("Task repeat count " + taskRepeatCount);
+        }
         System.out.println("Tasks file " + tasksFile);
         System.out.println("Num task per cat " + numTaskPerCat);
       }
@@ -698,40 +737,76 @@ public class SearchPerfTest {
     //spellChecker.setMinPrefix(0);
     //spellChecker.setMaxInspections(1024);
 
-    // set by the first coordinator thread that sees end of tasks:
-    AtomicReference<ThreadDetails> endThreadDetailsRef = new AtomicReference<>();
-    
-    final TaskThreads taskThreads = new TaskThreads(tasks, indexState, numConcurrentQueries, taskParserFactory, endThreadDetailsRef);
-    Thread.sleep(10);
+    final TaskSource measuredTasks;
+    final long measuredStartNanos;
+    final long measuredEndNanos;
+    final ThreadDetails endThreadDetails;
+    final double avgCPUCount;
+    final double elapsedMS;
 
-    final long startNanos = System.nanoTime();
-    taskThreads.start();
+    if (exactPhases) {
+      final long warmupPhaseSeed = randomSeed ^ 0x5741524d55504cL;
+      final long measuredPhaseSeed = randomSeed ^ 0x4d454153555245L;
 
-    // TODO: pull this into thread so that if tasks finish before warmup, we break out of this sleep and exit with TestWasTooShortException!!
-    Thread.sleep(WARMUP_MSEC);
-    final long postWarmupNanos = System.nanoTime();
-
-    // capture CPU of all running threads, after warmup:
-    ThreadDetails startThreadDetails = new ThreadDetails();
-    taskThreads.finish();
-    final long finishNanos = System.nanoTime();
-
-    ThreadDetails endThreadDetails = endThreadDetailsRef.get();
-
-    double avgCPUCount = -1d;
-    double elapsedMS = nsToMS(endThreadDetails.ns - startThreadDetails.ns);
-
-    // only report CPU stats if post-warmup runtime is at least as long as warmup:
-    if ((finishNanos - postWarmupNanos) > msToNS(WARMUP_MSEC)) {
-      ElapsedMSAndCoreCount elapsed = endThreadDetails.subtract(startThreadDetails);
-      if (elapsed != null) {
-        avgCPUCount = elapsed.avgCPUCount;
+      if (warmupTaskRepeatCount > 0) {
+        TaskSource warmupTasks = exactWorkload.newTaskSource(warmupTaskRepeatCount, warmupPhaseSeed, groupByCat);
+        AtomicReference<ThreadDetails> warmupEndThreadDetailsRef = new AtomicReference<>();
+        TaskThreads warmupThreads = new TaskThreads(warmupTasks, indexState, numConcurrentQueries, taskParserFactory, warmupEndThreadDetailsRef);
+        Thread.sleep(10);
+        warmupThreads.start();
+        warmupThreads.finish();
       }
+
+      measuredTasks = exactWorkload.newTaskSource(measuredTaskRepeatCount, measuredPhaseSeed, groupByCat);
+      AtomicReference<ThreadDetails> measuredEndThreadDetailsRef = new AtomicReference<>();
+      TaskThreads measuredThreads = new TaskThreads(measuredTasks, indexState, numConcurrentQueries, taskParserFactory, measuredEndThreadDetailsRef);
+      Thread.sleep(10);
+
+      System.out.println("---- MEASURED PHASE READY ----");
+      ThreadDetails measuredStartThreadDetails = new ThreadDetails();
+      measuredStartNanos = System.nanoTime();
+      measuredThreads.start();
+      measuredThreads.finish();
+      measuredEndNanos = System.nanoTime();
+      ThreadDetails measuredCompleteThreadDetails = new ThreadDetails();
+      System.out.println("---- MEASURED PHASE COMPLETE ----");
+
+      endThreadDetails = measuredEndThreadDetailsRef.get();
+      ElapsedMSAndCoreCount elapsed = measuredCompleteThreadDetails.subtract(measuredStartThreadDetails);
+      avgCPUCount = elapsed == null ? -1d : elapsed.avgCPUCount;
+      elapsedMS = nsToMS(measuredEndNanos - measuredStartNanos);
     } else {
-      System.out.println("\nAverage CPU cores used: -1\n  (test run was too short)");
+      measuredTasks = legacyTasks;
+      AtomicReference<ThreadDetails> endThreadDetailsRef = new AtomicReference<>();
+      final TaskThreads taskThreads = new TaskThreads(measuredTasks, indexState, numConcurrentQueries, taskParserFactory, endThreadDetailsRef);
+      Thread.sleep(10);
+
+      measuredStartNanos = System.nanoTime();
+      taskThreads.start();
+
+      // TODO: pull this into thread so that if tasks finish before warmup, we break out of this sleep and exit with TestWasTooShortException!!
+      Thread.sleep(WARMUP_MSEC);
+      final long postWarmupNanos = System.nanoTime();
+
+      // capture CPU of all running threads, after warmup:
+      ThreadDetails startThreadDetails = new ThreadDetails();
+      taskThreads.finish();
+      measuredEndNanos = System.nanoTime();
+
+      endThreadDetails = endThreadDetailsRef.get();
+      elapsedMS = nsToMS(endThreadDetails.ns - startThreadDetails.ns);
+
+      // only report CPU stats if post-warmup runtime is at least as long as warmup:
+      if ((measuredEndNanos - postWarmupNanos) > msToNS(WARMUP_MSEC)) {
+        ElapsedMSAndCoreCount elapsed = endThreadDetails.subtract(startThreadDetails);
+        avgCPUCount = elapsed == null ? -1d : elapsed.avgCPUCount;
+      } else {
+        avgCPUCount = -1d;
+        System.out.println("\nAverage CPU cores used: -1\n  (test run was too short)");
+      }
     }
 
-    final List<Task> allTasks = tasks.getAllTasks();
+    final List<Task> allTasks = measuredTasks.getAllTasks();
 
     PrintStream out = new PrintStream(logFile);
 
@@ -742,8 +817,12 @@ public class SearchPerfTest {
 
       final Map<Task,Task> tasksSeen = new HashMap<Task,Task>();
 
-      out.println("\nStart of tasks winddown: " + nsToMS(endThreadDetails.ns - startNanos) + " msec");
-      out.println("\nElapsed MS (excluding warmup and winddown): " + elapsedMS);
+      out.println("\nStart of tasks winddown: " + nsToMS(endThreadDetails.ns - measuredStartNanos) + " msec");
+      if (exactPhases) {
+        out.println("\nMeasured phase elapsed: " + elapsedMS + " msec");
+      } else {
+        out.println("\nElapsed MS (excluding warmup and winddown): " + elapsedMS);
+      }
       out.println("\nAverage CPU cores used: " + avgCPUCount);
       out.println("\nResults for " + allTasks.size() + " tasks:");
 
@@ -765,7 +844,7 @@ public class SearchPerfTest {
           }
         }
         out.println("\nTASK: " + task);
-        out.println("  " + nsToMS(task.runTimeNanos) + " msec @ " + ((task.startTimeNanos - startNanos)/1000000.0) + " msec");
+        out.println("  " + nsToMS(task.runTimeNanos) + " msec @ " + ((task.startTimeNanos - measuredStartNanos)/1000000.0) + " msec");
         out.println("  thread " + task.threadID);
         task.printResults(out, indexState);
       }

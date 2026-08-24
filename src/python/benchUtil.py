@@ -437,6 +437,7 @@ reOneGroup = re.compile("group=(.*?) totalHits=(.*?)(?: hits)? groupRelevance=(.
 reHeap = re.compile("HEAP: ([0-9]+)$")  # noqa: RUF039
 reLatencyAndStartTime = re.compile(r"^([\d.]+) msec @ ([\d.]+) msec$")
 reTasksWinddown = re.compile("^Start of tasks winddown: ([0-9.]+) msec$")  # noqa: RUF039
+reMeasuredPhaseElapsed = re.compile("^Measured phase elapsed: ([0-9.]+) msec$")  # noqa: RUF039
 reAvgCPUCores = re.compile("^Average CPU cores used: (-?[0-9.]+)$")  # noqa: RUF039
 
 
@@ -474,6 +475,10 @@ def parseResults(resultsFiles):
 
       if line.startswith(b"Start of tasks winddown: "):
         tasksWindownMS = float(reTasksWinddown.match(line.decode("utf-8")).group(1))
+        continue
+
+      if line.startswith(b"Measured phase elapsed: "):
+        tasksWindownMS = float(reMeasuredPhaseElapsed.match(line.decode("utf-8")).group(1))
         continue
 
       if line.startswith(b"Average CPU cores used: "):
@@ -746,7 +751,7 @@ def collateResults(resultIters):
   return iters
 
 
-def agg(iters, cat, name, verifyCounts):
+def agg(iters, cat, name, verifyCounts, warmSkip=WARM_SKIP):
   bestAvgMS = None
   lastHitCount = None
 
@@ -760,7 +765,7 @@ def agg(iters, cat, name, verifyCounts):
       continue
     tasks = tasksByCat[cat]
 
-    if len(tasks[0]) <= WARM_SKIP:
+    if len(tasks[0]) <= warmSkip:
       raise RuntimeError("only %s tasks in cat %s" % (len(tasks[0]), cat))
 
     totHitCount = 0
@@ -780,11 +785,11 @@ def agg(iters, cat, name, verifyCounts):
         for t in allMS:
           print("      %.4f" % t)
 
-      if len(allMS) <= WARM_SKIP:
-        raise RuntimeError(f"only {len(allMS)} runs (<= warmup={WARM_SKIP}) in cat {cat} for task {task}")
+      if len(allMS) <= warmSkip:
+        raise RuntimeError(f"only {len(allMS)} runs (<= warmup={warmSkip}) in cat {cat} for task {task}")
 
       # Skip warmup runs
-      allMS = allMS[WARM_SKIP:]
+      allMS = allMS[warmSkip:]
 
       allMS.sort()
       minMS = allMS[0]
@@ -947,6 +952,7 @@ class RunAlgs:
     self.javaCommand = javaCommand
     self.verifyScores = verifyScores
     self.verifyCounts = verifyCounts
+    self.exactPhases = False
     print()
     print("JAVA:\n%s" % os.popen("%s -version 2>&1" % javaCommand).read())
 
@@ -1264,7 +1270,13 @@ class RunAlgs:
     w("-analyzer", c.analyzer)
     w("-taskSource", c.tasksFile)
     w("-numConcurrentQueries", c.numConcurrentQueries)
-    w("-taskRepeatCount", c.competition.taskRepeatCount)
+    exactPhases = c.competition.warmupTaskRepeatCount is not None
+    self.exactPhases = exactPhases
+    if exactPhases:
+      w("-warmupTaskRepeatCount", c.competition.warmupTaskRepeatCount)
+      w("-measuredTaskRepeatCount", c.competition.measuredTaskRepeatCount)
+    else:
+      w("-taskRepeatCount", c.competition.taskRepeatCount)
     w("-field", "body")
     w("-tasksPerCat", c.competition.taskCountPerCat)
     if c.competition.groupByCat:
@@ -1328,7 +1340,7 @@ class RunAlgs:
 
     # nocommit don't wastefully load/process here too!!
     raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
-    qpss = self.compute_qps(raw_results, tasks_winddown_ms)
+    qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
     print("      %.1f actual sustained QPS; %.1f CPU cores used" % (qpss[0], avg_cpu_cores))
 
     return logFile
@@ -1367,10 +1379,13 @@ class RunAlgs:
 
     return resultLatencyMetrics
 
-  def compute_qps(self, raw_results, tasks_winddown_ms):  # noqa: PLR6301
+  def compute_qps(self, raw_results, tasks_winddown_ms, exactPhases=False):  # noqa: PLR6301
     # one per JVM iteration
     qpss = []
     for tasks in raw_results:
+      if exactPhases:
+        qpss.append(len(tasks) / (tasks_winddown_ms / 1000.0))
+        continue
       # make full copy -- don't mess up sort of incoming tasks
       sorted_tasks = tasks[:]
       sorted_tasks.sort(key=lambda x: x.startMsec)
@@ -1474,8 +1489,9 @@ class RunAlgs:
 
       # baseMS, cmpMS are lists of milli-seconds of the run-time for
       # this task across the N JVMs:
-      baseMS, baseTotHitCount = agg(baseResults, cat, "base", self.verifyCounts)
-      cmpMS, cmpTotHitCount = agg(cmpResults, cat, "cmp", self.verifyCounts)
+      warmSkip = 0 if self.exactPhases else WARM_SKIP
+      baseMS, baseTotHitCount = agg(baseResults, cat, "base", self.verifyCounts, warmSkip=warmSkip)
+      cmpMS, cmpTotHitCount = agg(cmpResults, cat, "cmp", self.verifyCounts, warmSkip=warmSkip)
 
       baseQPS = [1000.0 / x for x in baseMS]
       cmpQPS = [1000.0 / x for x in cmpMS]

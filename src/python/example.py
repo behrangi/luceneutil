@@ -29,6 +29,13 @@ def positiveInteger(value):
   return value
 
 
+def nonNegativeInteger(value):
+  value = int(value)
+  if value < 0:
+    raise argparse.ArgumentTypeError("must be at least 0")
+  return value
+
+
 def searchConcurrency(value):
   value = int(value)
   if value < -1:
@@ -86,6 +93,21 @@ def configureTaskCategories(comp, requestedTaskCategories):
   return "PKLookup" in requestedTaskCategories
 
 
+def configureExactPhases(parser, args):
+  values = (args.warmup_repetitions, args.measured_repetitions, args.tasks_per_category)
+  if not any(value is not None for value in values):
+    if args.warmups is None:
+      args.warmups = 20
+    return None
+  if not all(value is not None for value in values):
+    parser.error("exact workload phases require --warmup-repetitions, --measured-repetitions, and --tasks-per-category")
+  if args.warmups is not None:
+    parser.error("--warmups cannot be combined with exact workload phase options")
+  if args.mode == "build":
+    parser.error("exact workload phases apply only when search is enabled")
+  return values
+
+
 # simple example that runs benchmark with WIKI_MEDIUM source and taks files
 # Baseline here is ../lucene_baseline versus ../lucene_candidate
 if __name__ == "__main__":
@@ -124,15 +146,28 @@ if __name__ == "__main__":
   parser.add_argument("-c", "--candidate", default=os.environ.get("CANDIDATE") or "lucene_candidate", help="Path to lucene repo to be used for candidate")
   parser.add_argument("-r", "--reindex", action="store_true", help="Reindex data for candidate run")
   parser.add_argument("-iterations", "--iterations", default=20, type=int, help="Number of JVM iterations (separate JVM processes, default: 20)")
-  parser.add_argument("-warmups", "--warmups", default=20, type=int, help="Number of times each query runs within a single JVM for warmup (default: 20)")
+  parser.add_argument("-warmups", "--warmups", type=int, help="Legacy taskRepeatCount within each JVM (default: 20)")
+  parser.add_argument("--warmup-repetitions", type=nonNegativeInteger, help="Exact warmup repetitions per selected base task")
+  parser.add_argument("--measured-repetitions", type=positiveInteger, help="Exact measured repetitions per selected base task")
+  parser.add_argument("--tasks-per-category", type=positiveInteger, help="Exact number of selected base tasks for each regular category")
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
+  exactPhases = configureExactPhases(parser, args)
   print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.search_concurrency != 0
-  comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups)
+  if exactPhases is None:
+    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups)
+  else:
+    comp = competition.Competition(
+      verifyCounts=not countsAreCorrect,
+      jvmCount=args.iterations,
+      taskCountPerCat=args.tasks_per_category,
+      warmupTaskRepeatCount=args.warmup_repetitions,
+      measuredTaskRepeatCount=args.measured_repetitions,
+    )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)
 

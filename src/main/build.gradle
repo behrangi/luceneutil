@@ -7,6 +7,16 @@ sourceSets {
     srcDir '.'
     include 'perf', 'knn'
   }
+  test.java {
+    srcDir '../test'
+    include 'perf/LocalTaskSourceWorkloadTest.java'
+  }
+}
+
+tasks.register('testExactWorkloadPhases', JavaExec) {
+  dependsOn testClasses
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'perf.LocalTaskSourceWorkloadTest'
 }
 
 def luceneDir = (String) findProperty("external.lucene.repo") + '/lucene'

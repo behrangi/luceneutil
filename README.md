@@ -181,6 +181,23 @@ python src/python/localrun.py -source wikimediumall --query-concurrency 4 --sear
 
 These options change only scheduling and parallelism. They do not change query selection, PK lookup enablement, task repetitions, tasks per category, JVM iterations, the selected index, or the total logical workload.
 
+### Exact warmup and measured workloads
+
+Hardware-characterization runs can define two finite execution phases explicitly:
+
+```bash
+python src/python/localrun.py -source wikimediumall --queries HighTerm \
+  --warmup-repetitions 3 --measured-repetitions 5 --tasks-per-category 2
+```
+
+All three exact-phase options are required together. Warmup repetitions may be zero; measured repetitions and tasks per regular category must be at least one. Each selected regular category must contain at least the requested number of task definitions or the run fails. The example executes 6 warmup and 10 measured `HighTerm` tasks per JVM.
+
+Warmup and measurement use the same selected base tasks, PK setting, index, and concurrency. They use fresh Task instances and independent deterministic ordering, so changing the warmup repetition count does not change the measured workload. Warmup results are discarded; only measured tasks are verified and reported. Exact mode bypasses Java's legacy time-based warmup and measures throughput over the complete finite measured phase.
+
+Synthetic `PKLookup` remains independent. Its base batch count retains the existing `min(floor(maxDoc / 6000), tasks-per-category)` rule, and that base workload is repeated separately for warmup and measurement.
+
+When none of these options is supplied, historical `--warmups`/`taskRepeatCount` behavior remains unchanged. Explicit `--warmups` cannot be combined with exact-phase options. Exact phases currently require a local finite task file; remote task sources are rejected.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

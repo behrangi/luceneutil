@@ -128,7 +128,13 @@ class ConcurrencyControlsTest(unittest.TestCase):
         return 0
 
     index = types.SimpleNamespace(getPath=lambda: "index", facets=None)
-    competition = types.SimpleNamespace(taskRepeatCount=20, taskCountPerCat=1, groupByCat=False)
+    competition = types.SimpleNamespace(
+      taskRepeatCount=20,
+      taskCountPerCat=1,
+      groupByCat=False,
+      warmupTaskRepeatCount=None,
+      measuredTaskRepeatCount=None,
+    )
     competitor = types.SimpleNamespace(
       checkout="checkout",
       name="candidate",

@@ -466,6 +466,8 @@ class Competition:
     taskRepeatCount=20,
     jvmCount=20,
     groupByCat=False,
+    warmupTaskRepeatCount=None,
+    measuredTaskRepeatCount=None,
   ):
     self.cold = cold
     self.competitors = []
@@ -506,6 +508,8 @@ class Competition:
     # hotspot compiles (after 1st or 2nd time the query is run) it
     # doesn't seem to re-compile:
     self.taskRepeatCount = taskRepeatCount
+    self.warmupTaskRepeatCount = warmupTaskRepeatCount
+    self.measuredTaskRepeatCount = measuredTaskRepeatCount
 
     # JVM count: how many times to run the java process for each
     # competitor.  Increase this to get more repeatable results, because each run can compile the
