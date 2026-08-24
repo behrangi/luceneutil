@@ -102,6 +102,7 @@ def run(
   requestedTaskCategories=None,
 ):
   competitors = [challenger, base]
+  verbose = getattr(base.competition, "verbose", False)
 
   if randomSeed is None:
     raise RuntimeError("missing randomSeed")
@@ -117,10 +118,11 @@ def run(
     validateTaskCategories(requestedTaskCategories, tasksFile)
 
   # verifyScores = False
-  r = benchUtil.RunAlgs(constants.JAVA_COMMAND, verifyScores, verifyCounts)
+  r = benchUtil.RunAlgs(constants.JAVA_COMMAND, verifyScores, verifyCounts, verbose=verbose)
   if "-noc" not in sys.argv:
-    print()
-    print("Compile:")
+    if verbose:
+      print()
+      print("Compile:")
     for c in competitors:
       r.compile(c)
   sum = search or "-sum" in sys.argv
@@ -150,32 +152,32 @@ def run(
   if search:
     if taskPatterns != (None, None):
       pos, neg = taskPatterns
-      if pos is None:
+      if verbose and pos is None:
         if neg is None:
           print("    tasks file: %s" % tasksFile)
         else:
           print("    tasks file: NOT %s from %s" % (",".join(neg), tasksFile))
-      elif neg is None:
+      elif verbose and neg is None:
         print("    tasks file: %s from %s" % (",".join(pos), tasksFile))
-      else:
+      elif verbose:
         print("    tasks file: %s, NOT %s from %s" % (",".join(pos), ",".join(neg), tasksFile))
       newTasksFile = "%s/%s.tasks" % (constants.BENCH_BASE_DIR, os.getpid())
       filterTasksFile(competitors, tasksFile, newTasksFile, taskPatterns)
 
     else:
-      print("    tasks file: %s" % tasksFile)
+      if verbose:
+        print("    tasks file: %s" % tasksFile)
       newTasksFile = None
 
     try:
       results = {}
 
       if constants.JAVA_COMMAND.find(" -ea") != -1:
-        print()
-        print("WARNING: *** assertions are enabled *** JAVA_COMMAND=%s" % constants.JAVA_COMMAND)
-        print()
+        print("WARNING: assertions are enabled" if not verbose else "WARNING: *** assertions are enabled *** JAVA_COMMAND=%s" % constants.JAVA_COMMAND)
 
-      print()
-      print("Search:")
+      if verbose:
+        print()
+        print("Search:")
 
       taskFiles = {}
 
@@ -189,7 +191,8 @@ def run(
             os.remove(fileName)
 
       for iter in range(base.competition.jvmCount):
-        print("  iter %d" % iter)
+        if verbose:
+          print("  iter %d" % iter)
 
         seed = rand.randint(-10000000, 1000000)
 
@@ -198,14 +201,19 @@ def run(
         rotation_index = iter % len(competitors)
         rotated_competitors = competitors[rotation_index:] + competitors[:rotation_index]
         for c in rotated_competitors:
-          print("    %s:" % c.name)
+          if verbose:
+            print("    %s:" % c.name)
+          else:
+            print(f"[{iter + 1}/{base.competition.jvmCount}] {c.name}")
           logFile = r.runSimpleSearchBench(iter, id, c, coldRun, seed, staticSeed, filter=None, taskPatterns=taskPatterns)
           results.setdefault(c, []).append(logFile)
 
-        print()
-        print("Report after iter %d:" % iter)
+        if verbose:
+          print()
+          print("Report after iter %d:" % iter)
         # print '  results: %s' % results
-        details, cmpDiffs, cmpHeap = r.simpleReport(results[base], results[challenger], "-jira" in sys.argv, "-html" in sys.argv, cmpDesc=challenger.name, baseDesc=base.name)
+        reportWriter = sys.stdout.write if verbose else lambda unused_text: None
+        details, cmpDiffs, cmpHeap = r.simpleReport(results[base], results[challenger], "-jira" in sys.argv, "-html" in sys.argv, cmpDesc=challenger.name, baseDesc=base.name, writer=reportWriter)
         if cmpDiffs is not None:
           if cmpDiffs[1]:
             raise RuntimeError("errors occurred: %s" % str(cmpDiffs))
@@ -217,10 +225,11 @@ def run(
         os.remove(newTasksFile)
 
     # TODO: maybe print this after each iter, not just in the end, for the impatient/progressive?
-    for mode in "cpu", "heap":
-      for c in competitors:
-        print(f"\n{mode.upper()} merged search profile for {c.name}:")
-        print(c.getAggregateProfilerResult(id, mode, stackSize=12)[0][1])
+    if verbose:
+      for mode in "cpu", "heap":
+        for c in competitors:
+          print(f"\n{mode.upper()} merged search profile for {c.name}:")
+          print(c.getAggregateProfilerResult(id, mode, stackSize=12)[0][1])
 
   elif not skipReport:
     results = {}

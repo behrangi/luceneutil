@@ -437,17 +437,19 @@ class Competitor:
     # layer of directory
     files = list(filter(lambda f: os.path.isfile(f) and f.endswith(".java"), [os.path.join(perfSrcDir, f) for f in os.listdir(perfSrcDir)]))
 
-    print("files %s" % files)
+    if self.competition.verbose:
+      print("files %s" % files)
 
     cmd = [self.javacCommand, "-g", "-d", buildDir, "-classpath", cp]
     cmd += files
 
-    print(f"compile: {' '.join(cmd)}")
+    if self.competition.verbose:
+      print(f"compile: {' '.join(cmd)}")
 
-    benchUtil.run(cmd, os.path.join(constants.LOGS_DIR, "compile.log"))
+    benchUtil.run(cmd, os.path.join(constants.LOGS_DIR, "compile.log"), verbose=self.competition.verbose)
     # copy resources/META-INF
     if os.path.exists(os.path.join(perfSrc, "resources/*")):
-      benchUtil.run("cp", "-r", os.path.join(perfSrc, "resources/*"), buildDir.replace("\\", "/"))
+      benchUtil.run("cp", "-r", os.path.join(perfSrc, "resources/*"), buildDir.replace("\\", "/"), verbose=self.competition.verbose)
 
 
 class Competition:
@@ -470,6 +472,7 @@ class Competition:
     measuredTaskRepeatCount=None,
     perfControl=False,
     perfEvents=None,
+    verbose=False,
   ):
     self.cold = cold
     self.competitors = []
@@ -514,6 +517,7 @@ class Competition:
     self.measuredTaskRepeatCount = measuredTaskRepeatCount
     self.perfControl = perfControl
     self.perfEvents = None if perfEvents is None else tuple(perfEvents)
+    self.verbose = verbose
 
     # JVM count: how many times to run the java process for each
     # competitor.  Increase this to get more repeatable results, because each run can compile the
@@ -545,7 +549,8 @@ class Competition:
     for c in self.competitors:
       if c.name == name:
         raise RuntimeError(f"competitor named {name} already added")
-    print("Using checkout:[%s] for competitor:[%s]" % (benchUtil.checkoutToPath(checkout), name))
+    if self.verbose:
+      print("Using checkout:[%s] for competitor:[%s]" % (benchUtil.checkoutToPath(checkout), name))
     c = Competitor(name, checkout, **kwArgs)
     c.competition = self
     self.competitors.append(c)

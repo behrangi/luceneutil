@@ -202,6 +202,8 @@ Add `--perf-control` to an exact-phase search run to start `perf stat` with coun
 
 Select perf events for an individual run with `--perf-events`, for example `--perf-events cycles,instructions,stall_backend_mem,ll_cache_miss_rd`. The supplied comma-separated list replaces `constants.PERF_STATS` for that run; surrounding whitespace is removed while order and duplicate entries are preserved. Empty event names are rejected. When the option is omitted, the existing event list is unchanged. Event selection works independently with legacy whole-process perf execution and with `--perf-control`.
 
+Console output is concise by default. It shows the effective benchmark configuration, each competitor/JVM iteration, exact-phase lifecycle markers, measured elapsed time, QPS, CPU use, and log paths. Add `--verbose` to retain detailed commands, setup diagnostics, per-iteration reports, and merged JFR profile presentation. Concise mode still captures raw subprocess output and the exact executed command in the run's `.stdout` log; failures always show the exit status, log path, and a useful output tail. JFR collection is unchanged in both modes.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

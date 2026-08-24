@@ -133,6 +133,33 @@ def parsePerfEvents(parser, value, mode):
   return tuple(events)
 
 
+def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEvents):
+  indexPath = index.getPath() if hasattr(index, "getPath") else (args.index_path or "generated from benchmark configuration")
+  defaultQueryConcurrency = getattr(getattr(competition, "constants", None), "SEARCH_NUM_CONCURRENT_QUERIES", "SEARCH_NUM_CONCURRENT_QUERIES")
+  queryConcurrency = args.query_concurrency if args.query_concurrency is not None else defaultQueryConcurrency
+  print("Search benchmark" if args.mode != "build" else "Index benchmark")
+  print(f"  mode: {args.mode}")
+  print(f"  source: {args.source}")
+  print(f"  index: {indexPath}")
+  print(f"  JVM iterations: {args.iterations}")
+  if args.mode != "build":
+    queries = "all" if requestedTaskCategories is None else ",".join(requestedTaskCategories)
+    resolvedPerfEvents = getattr(getattr(competition, "benchUtil", None), "PERF_STATS", ("constants.PERF_STATS",)) if perfEvents is None else perfEvents
+    print(f"  queries: {queries}")
+    print(f"  query concurrency: {queryConcurrency}")
+    print(f"  search concurrency: {args.search_concurrency}")
+    if args.warmup_repetitions is None:
+      print(f"  task repetitions: {args.warmups}")
+      print("  exact phases: disabled")
+    else:
+      print(f"  warmup repetitions: {args.warmup_repetitions}")
+      print(f"  measured repetitions: {args.measured_repetitions}")
+      print(f"  tasks/category: {args.tasks_per_category}")
+    print(f"  perf control: {'enabled' if args.perf_control else 'disabled'}")
+    print(f"  perf events: {','.join(resolvedPerfEvents)}")
+  print()
+
+
 # simple example that runs benchmark with WIKI_MEDIUM source and taks files
 # Baseline here is ../lucene_baseline versus ../lucene_candidate
 if __name__ == "__main__":
@@ -184,18 +211,20 @@ if __name__ == "__main__":
     "--perf-events",
     help="Comma-separated perf stat events for this run (default: existing constants.PERF_STATS)",
   )
+  parser.add_argument("--verbose", action="store_true", help="Print detailed benchmark diagnostics to the console")
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
   exactPhases = configureExactPhases(parser, args)
   validatePerfControl(parser, args, exactPhases)
   perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
-  print("Running benchmarks with the following args: %s" % args)
+  if args.verbose:
+    print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.search_concurrency != 0
   if exactPhases is None:
-    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, perfEvents=perfEvents)
+    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, perfEvents=perfEvents, verbose=args.verbose)
   else:
     comp = competition.Competition(
       verifyCounts=not countsAreCorrect,
@@ -205,6 +234,7 @@ if __name__ == "__main__":
       measuredTaskRepeatCount=args.measured_repetitions,
       perfControl=args.perf_control,
       perfEvents=perfEvents,
+      verbose=args.verbose,
     )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)
@@ -276,6 +306,9 @@ if __name__ == "__main__":
       searchConcurrency=args.search_concurrency,
       pk=includePK,
     )
+
+  if not args.verbose:
+    printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEvents)
 
   # start the benchmark - this can take long depending on your index and machines
   comp.benchmark("baseline_vs_patch")

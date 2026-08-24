@@ -925,21 +925,27 @@ def stats(l):
 # see https://github.com/apache/lucene/issues/15662
 
 
-def get_profiler_jvm_args(jfr_file_name, indent=""):
+def get_profiler_jvm_args(jfr_file_name, indent="", printInfo=True):
   if USE_CPU_TIME_PROFILER:
-    print(f"{indent}NOTE: using experimental CPU time profiler (see https://mostlynerdless.de/blog/2025/06/11/java-25s-new-cpu-time-profiler-1)")
+    if printInfo:
+      print(f"{indent}NOTE: using experimental CPU time profiler (see https://mostlynerdless.de/blog/2025/06/11/java-25s-new-cpu-time-profiler-1)")
     # new experimental CPU-time profiler in Java 25 -- should eliminate "sleeping ghosts" that appear busy while in fact sleeping; see https://mostlynerdless.de/blog/2025/06/11/java-25s-new-cpu-time-profiler-1/
     args = f"-XX:StartFlightRecording=jdk.CPUTimeSample#enabled=true,dumponexit=true,maxsize={constants.JFR_MAX_SIZE_MB}M,settings={constants.BENCH_BASE_DIR}/src/python/profiling.jfc,filename={jfr_file_name}"
   else:
-    print(f"{indent}NOTE: using async profiler")
+    if printInfo:
+      print(f"{indent}NOTE: using async profiler")
     args = f"-XX:StartFlightRecording=dumponexit=true,maxsize={constants.JFR_MAX_SIZE_MB}M,settings={constants.BENCH_BASE_DIR}/src/python/profiling.jfc,filename={jfr_file_name}"
   return args
 
 
-def run(cmd, logFile=None, indent="    ", vmstatLogFile=None, topLogFile=None):
-  print("%srun: %s, cwd=%s vmstatLogFile=%s topLogFile=%s" % (indent, cmd, os.getcwd(), vmstatLogFile, topLogFile))
+def run(cmd, logFile=None, indent="    ", vmstatLogFile=None, topLogFile=None, verbose=True):
+  if verbose:
+    print("%srun: %s, cwd=%s vmstatLogFile=%s topLogFile=%s" % (indent, cmd, os.getcwd(), vmstatLogFile, topLogFile))
   if logFile is not None:
     out = open(logFile, "wb")
+    if not verbose:
+      commandText = cmd if isinstance(cmd, str) else " ".join(str(part) for part in cmd)
+      out.write(("COMMAND: %s\n" % commandText).encode("utf-8"))
   else:
     out = subprocess.STDOUT
 
@@ -977,7 +983,7 @@ reCoreJar = re.compile("lucene-core-[0-9]+\\.[0-9]+\\.[0-9]+(?:-SNAPSHOT)?\\.jar
 
 
 class RunAlgs:
-  def __init__(self, javaCommand, verifyScores, verifyCounts):
+  def __init__(self, javaCommand, verifyScores, verifyCounts, verbose=True):
     self.logCounter = 0
     self.results = []
     self.compiled = set()
@@ -985,19 +991,22 @@ class RunAlgs:
     self.verifyScores = verifyScores
     self.verifyCounts = verifyCounts
     self.exactPhases = False
-    print()
-    print("JAVA:\n%s" % os.popen("%s -version 2>&1" % javaCommand).read())
+    self.verbose = verbose
+    if verbose:
+      print()
+      print("JAVA:\n%s" % os.popen("%s -version 2>&1" % javaCommand).read())
 
-    print()
-    if osName not in ("windows", "cygwin"):
-      print("OS:\n%s" % os.popen("uname -a 2>&1").read())
-    else:
-      print("OS:\n%s" % sys.platform)
+      print()
+      if osName not in ("windows", "cygwin"):
+        print("OS:\n%s" % os.popen("uname -a 2>&1").read())
+      else:
+        print("OS:\n%s" % sys.platform)
 
     if not os.path.exists(constants.LOGS_DIR):
       os.makedirs(constants.LOGS_DIR)
-    print()
-    print("LOGS:\n%s" % constants.LOGS_DIR)
+    if verbose:
+      print()
+      print("LOGS:\n%s" % constants.LOGS_DIR)
 
   def printEnv(self):
     print()
@@ -1154,7 +1163,7 @@ class RunAlgs:
       else:
         vmstatLogFile = None
       topLogFile = f"{runLogDir}/{id}.top.log"
-      run(cmd, fullLogFile, vmstatLogFile=vmstatLogFile, topLogFile=topLogFile)
+      run(cmd, fullLogFile, vmstatLogFile=vmstatLogFile, topLogFile=topLogFile, verbose=self.verbose)
       t1 = time.time()
       if printCharts and IndexChart.Gnuplot is not None:
         chart = IndexChart.IndexChart(fullLogFile, index.getName())
@@ -1176,7 +1185,7 @@ class RunAlgs:
         shutil.rmtree(fullIndexPath)
       raise
 
-    profilerResults = profilerOutput(index.javaCommand, jfrOutput, checkoutToPath(index.checkout), profilerCount, profilerStackSize, desc=desc)
+    profilerResults = profilerOutput(index.javaCommand, jfrOutput, checkoutToPath(index.checkout), profilerCount, profilerStackSize, desc=desc, verbose=self.verbose)
 
     return fullIndexPath, fullLogFile, profilerResults, jfrOutput
 
@@ -1200,18 +1209,21 @@ class RunAlgs:
         # for core we build a JAR in order to benefit from the MR JAR stuff
         os.chdir(checkoutPath)
         for module in ["core"]:
-          print("compile lucene:core...")
-          run([constants.GRADLE_EXE, "lucene:core:jar"], "%s/compile.log" % constants.LOGS_DIR)
+          if self.verbose:
+            print("compile lucene:core...")
+          run([constants.GRADLE_EXE, "lucene:core:jar"], "%s/compile.log" % constants.LOGS_DIR, verbose=self.verbose)
         for module in ("suggest", "highlighter", "misc", "analysis:common", "grouping", "codecs", "facet", "sandbox", "queryparser", "spatial3d"):
           # Try to be faster; this may miss changes, e.g. a static final constant changed in core that is used in another module:
           modulePath = "%s/lucene/%s" % (checkoutPath, module.replace(":", "/"))
           classesPath = "%s/build/classes/java" % (modulePath)
           lastCompileTime = common.getLatestModTime(classesPath, ".class")
           if common.getLatestModTime("%s/src/java" % modulePath) > lastCompileTime:
-            print("compile lucene:%s..." % module)
-            run([constants.GRADLE_EXE, "lucene:%s:compileJava" % module], "%s/compile.log" % constants.LOGS_DIR)
+            if self.verbose:
+              print("compile lucene:%s..." % module)
+            run([constants.GRADLE_EXE, "lucene:%s:compileJava" % module], "%s/compile.log" % constants.LOGS_DIR, verbose=self.verbose)
 
-      print("  %s" % path)
+      if self.verbose:
+        print("  %s" % path)
       os.chdir(path)
       path = path.removesuffix("/")
 
@@ -1231,18 +1243,21 @@ class RunAlgs:
         for module in ["core"]:
           modulePath = "%s/lucene/%s" % (checkoutPath, module)
           os.chdir(modulePath)
-          print("  %s..." % modulePath)
-          run([constants.GRADLE_EXE, "jar"], "%s/compile.log" % constants.LOGS_DIR)
+          if self.verbose:
+            print("  %s..." % modulePath)
+          run([constants.GRADLE_EXE, "jar"], "%s/compile.log" % constants.LOGS_DIR, verbose=self.verbose)
         for module in ("suggest", "highlighter", "misc", "analysis/common", "grouping", "codecs", "facet", "sandbox"):
           modulePath = "%s/lucene/%s" % (checkoutPath, module)
           classesPath = "%s/lucene/build/%s/classes/java" % (checkoutPath, module)
           # Try to be faster than ant; this may miss changes, e.g. a static final constant changed in core that is used in another module:
           if common.getLatestModTime("%s/src/java" % modulePath) > common.getLatestModTime(classesPath, ".class"):
-            print("  %s..." % modulePath)
+            if self.verbose:
+              print("  %s..." % modulePath)
             os.chdir(modulePath)
-            run([constants.GRADLE_EXE, "compileJava"], "%s/compile.log" % constants.LOGS_DIR)
+            run([constants.GRADLE_EXE, "compileJava"], "%s/compile.log" % constants.LOGS_DIR, verbose=self.verbose)
 
-      print("  %s" % path)
+      if self.verbose:
+        print("  %s" % path)
       os.chdir(path)
       path = path.removesuffix("/")
 
@@ -1252,6 +1267,7 @@ class RunAlgs:
       os.chdir(cwd)
 
   def runSimpleSearchBench(self, iter, id, c, coldRun, seed, staticSeed, filter=None, taskPatterns=None):
+    verbose = getattr(self, "verbose", True)
     if coldRun:
       # flush OS buffer cache
       print("Drop buffer caches...")
@@ -1292,7 +1308,7 @@ class RunAlgs:
       command += c.javaCommand.split()
 
       command += [
-        get_profiler_jvm_args(f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr", "      "),
+        get_profiler_jvm_args(f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr", "      ", printInfo=verbose),
         "-XX:+UnlockDiagnosticVMOptions",
         "-XX:+DebugNonSafepoints",
         # uncomment the line below to enable remote debugging
@@ -1355,33 +1371,57 @@ class RunAlgs:
       if c.pollute:
         w("-pollute")
 
-      print("      log: %s + stdout" % logFile)
+      if verbose:
+        print("      log: %s + stdout" % logFile)
       t0 = time.time()
-      print("      run: %s" % " ".join(command))
+      if verbose:
+        print("      run: %s" % " ".join(command))
       p = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
 
       mode = "wbu" if PYTHON_MAJOR_VER < 3 else "wb"
       f = open(logFile + ".stdout", mode)
+      if not verbose:
+        f.write(("COMMAND: %s\n" % " ".join(command)).encode("utf-8"))
       while True:
         s = p.stdout.readline()
         if s == b"":
           break
         f.write(s)
         f.flush()
+        if not verbose:
+          if b"---- MEASURED PHASE READY ----" in s:
+            print("  warmup complete")
+            print("  measured phase ready")
+          elif b"---- MEASURED PHASE COMPLETE ----" in s:
+            print("  measured phase complete")
       f.close()
-      if p.wait() != 0:
+      exitStatus = p.wait()
+      if exitStatus != 0:
         print()
-        print("SearchPerfTest FAILED:")
-        s = open(logFile + ".stdout")
-        for line in s.readlines():
+        print(f"SearchPerfTest failed with exit status {exitStatus}")
+        print(f"  log: {logFile}.stdout")
+        with open(logFile + ".stdout") as s:
+          lines = s.readlines()
+        if not verbose:
+          lines = lines[-40:]
+          print("  final output:")
+        for line in lines:
           print(line.rstrip())
         raise RuntimeError("SearchPerfTest failed; see log %s.stdout" % logFile)
 
-      print("      %.1f s" % (time.time() - t0))
+      if verbose:
+        print("      %.1f s" % (time.time() - t0))
 
       raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
       qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
-      print("      %.1f actual sustained QPS; %.1f CPU cores used" % (qpss[0], avg_cpu_cores))
+      if verbose:
+        print("      %.1f actual sustained QPS; %.1f CPU cores used" % (qpss[0], avg_cpu_cores))
+      else:
+        if exactPhases:
+          print(f"  measured elapsed: {tasks_winddown_ms / 1000.0:.3f} s")
+        print(f"  QPS: {qpss[0]:.1f}")
+        print(f"  CPU cores used: {avg_cpu_cores:.1f}")
+        print(f"  log: {logFile} + {logFile}.stdout")
 
       return logFile
 
@@ -2025,11 +2065,14 @@ def fixupPerfOutput(s):
   return "\n".join(linesOut)
 
 
-def profilerOutput(javaCommand, jfrOutput, checkoutPath, profilerCount, profilerStackSize, desc=None):
+def profilerOutput(javaCommand, jfrOutput, checkoutPath, profilerCount, profilerStackSize, desc=None, verbose=True):
   profilerResults = []
 
-  print(f"\nProfiler summary for {jfrOutput}")
-  subprocess.run(["jfr", "summary", jfrOutput], check=True)
+  if verbose:
+    print(f"\nProfiler summary for {jfrOutput}")
+    subprocess.run(["jfr", "summary", jfrOutput], check=True)
+  else:
+    subprocess.run(["jfr", "summary", jfrOutput], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
 
   jfr_size_mb = os.path.getsize(jfrOutput) / 1024.0 / 1024.0
   if desc is None:
@@ -2050,7 +2093,8 @@ def profilerOutput(javaCommand, jfrOutput, checkoutPath, profilerCount, profiler
         "org.apache.lucene.gradle.plugins.java.ProfileResults",
         jfrOutput,
       ]
-      print(f"profile command: {' '.join([shlex.quote(x) for x in profileCommand])}")
+      if verbose:
+        print(f"profile command: {' '.join([shlex.quote(x) for x in profileCommand])}")
       try:
         result = subprocess.run(profileCommand, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True)
       except subprocess.CalledProcessError as e:
@@ -2058,6 +2102,7 @@ def profilerOutput(javaCommand, jfrOutput, checkoutPath, profilerCount, profiler
         raise
 
       output = f"\nProfiler for {mode} at {stackSize=} [{desc}]:\n{result.stdout.decode('utf-8')}"
-      print(output)
+      if verbose:
+        print(output)
       profilerResults.append((mode, stackSize, output))
   return profilerResults
