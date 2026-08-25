@@ -1313,7 +1313,7 @@ class RunAlgs:
     # randomSeed = random.randint(-1000000, 1000000)
 
     cp = classPathToString(getClassPath(c.checkout))
-    logFile, processLogFile, jfrFile = self.getSearchArtifactPaths(iter, id, c, create=True)
+    logFile, processLogFile, jfrFile, perfStatFile = self.getSearchArtifactPaths(iter, id, c, create=True)
 
     if c.doSort:
       doSort = "-sort"
@@ -1330,7 +1330,10 @@ class RunAlgs:
     with PerfControlResources(perfControl) as perfControlResources:
       command = []
       if PERF_EXE is not None:
-        command += [PERF_EXE, "stat", "-dd", "-e", ",".join(resolvedPerfEvents)]
+        command += [PERF_EXE, "stat", "-dd"]
+        if perfStatFile is not None:
+          command += ["-x", ";", "--no-big-num", "-o", perfStatFile]
+        command += ["-e", ",".join(resolvedPerfEvents)]
         if perfControl:
           command += ["--delay=-1", "--control=fifo:%s,%s" % (perfControlResources.controlPath, perfControlResources.ackPath)]
       command += c.javaCommand.split()
@@ -1430,6 +1433,14 @@ class RunAlgs:
         print()
         print(f"SearchPerfTest failed with exit status {exitStatus}")
         print(f"  log: {processLogFile}")
+        if perfStatFile is not None and os.path.exists(perfStatFile):
+          print(f"  perf stat: {perfStatFile}")
+          with open(perfStatFile) as perfOutput:
+            perfLines = perfOutput.readlines()
+          if not verbose:
+            perfLines = perfLines[-40:]
+          for line in perfLines:
+            print(line.rstrip())
         with open(processLogFile) as s:
           lines = s.readlines()
         if not verbose:
@@ -1466,7 +1477,7 @@ class RunAlgs:
   def getSearchLogFiles(self, id, c):  # noqa: PLR6301
     logFiles = []
     for iter in range(c.competition.jvmCount):
-      logFile, unused_process_log, unused_jfr_file = self.getSearchArtifactPaths(iter, id, c, create=False)
+      logFile, unused_process_log, unused_jfr_file, unused_perf_stat_file = self.getSearchArtifactPaths(iter, id, c, create=False)
       logFiles.append(logFile)
     return logFiles
 
@@ -1474,7 +1485,7 @@ class RunAlgs:
     outputDir = getattr(self, "outputDir", None)
     if outputDir is None:
       logFile = "%s/%s.%s.%d" % (constants.LOGS_DIR, id, c.name, iter)
-      return logFile, logFile + ".stdout", f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr"
+      return logFile, logFile + ".stdout", f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr", None
 
     iterationDir = os.path.join(outputDir, c.name, f"iteration-{iter}")
     if create:
@@ -1483,6 +1494,7 @@ class RunAlgs:
       os.path.join(iterationDir, "result.log"),
       os.path.join(iterationDir, "process.log"),
       os.path.join(iterationDir, "profile.jfr"),
+      os.path.join(iterationDir, "perf.stat"),
     )
 
   def computeTaskLatencies(self, inputList, catSet):  # noqa: PLR6301

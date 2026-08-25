@@ -97,6 +97,7 @@ class SearchRunDirectoryTest(unittest.TestCase):
         "%s/test.baseline.1" % bench_util.constants.LOGS_DIR,
         "%s/test.baseline.1.stdout" % bench_util.constants.LOGS_DIR,
         f"{bench_util.constants.LOGS_DIR}/bench-search-test-baseline-1.jfr",
+        None,
       ),
       legacy.getSearchArtifactPaths(1, "test", competitor),
     )
@@ -104,11 +105,12 @@ class SearchRunDirectoryTest(unittest.TestCase):
     with tempfile.TemporaryDirectory() as run_directory:
       organized = bench_util.RunAlgs.__new__(bench_util.RunAlgs)
       organized.outputDir = run_directory
-      result, process, profile = organized.getSearchArtifactPaths(1, "test", competitor, create=True)
+      result, process, profile, perf_stat = organized.getSearchArtifactPaths(1, "test", competitor, create=True)
       iteration = os.path.join(run_directory, "baseline", "iteration-1")
       self.assertEqual(os.path.join(iteration, "result.log"), result)
       self.assertEqual(os.path.join(iteration, "process.log"), process)
       self.assertEqual(os.path.join(iteration, "profile.jfr"), profile)
+      self.assertEqual(os.path.join(iteration, "perf.stat"), perf_stat)
 
   def test_only_search_artifact_command_arguments_change(self):
     bench_util = load_bench_util()

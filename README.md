@@ -206,7 +206,7 @@ Console output is concise by default. It shows the effective benchmark configura
 
 For large hardware-characterization workloads, add `--hardware-summary` to a complete exact-phase search configuration. This retains the exact workload and perf-control boundaries but records only the completed measured-task count, measured elapsed time, QPS, and CPU use. It skips per-query result serialization, hit comparison, latency percentiles, and `out.png` generation. The option is not valid for legacy or build-only runs; omitting it preserves detailed result reporting unchanged.
 
-Search invocations launched through `example.py` create one unique directory beneath `--output-root` (default: `constants.LOGS_DIR`). Its filesystem-safe ID has the form `YYYY-MM-DD-HH-MM-SS-RANDOM`. Each competitor and JVM iteration receives its own directory containing `result.log`, `process.log`, and `profile.jfr`; the resolved absolute run directory is printed when execution begins.
+Search invocations launched through `example.py` create one unique directory beneath `--output-root` (default: `constants.LOGS_DIR`). Its filesystem-safe ID has the form `YYYY-MM-DD-HH-MM-SS-RANDOM`. Each competitor and JVM iteration receives its own directory containing `result.log`, `process.log`, and `profile.jfr`; when perf is available, its delimiter-separated raw counter output is written separately to `perf.stat`. The resolved absolute run directory is printed when execution begins.
 
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
