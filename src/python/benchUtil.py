@@ -15,7 +15,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import csv
 import datetime
+import json
 import math
 import os
 import pickle
@@ -494,6 +496,145 @@ def parseHardwareSummary(resultsFile):
   if missing:
     raise RuntimeError("hardware summary is missing: %s" % ", ".join(sorted(missing)))
   return values
+
+
+def _perfNumber(value):
+  try:
+    return int(value)
+  except ValueError:
+    return float(value)
+
+
+def parsePerfStat(perfStatFile):
+  events = []
+  metadataLines = []
+  with open(perfStatFile, encoding="utf-8") as f:
+    for rawLine in f:
+      line = rawLine.rstrip("\r\n")
+      if line == "":
+        continue
+      if line.lstrip().startswith("#"):
+        metadataLines.append(line)
+        continue
+      fields = next(csv.reader([line], delimiter=";"))
+      if len(fields) < 5 or fields[2].strip() == "":
+        metadataLines.append(line)
+        continue
+
+      rawValue = fields[0].strip()
+      if rawValue == "<not counted>":
+        status = "not_counted"
+        value = None
+      elif rawValue == "<not supported>":
+        status = "not_supported"
+        value = None
+      else:
+        try:
+          value = _perfNumber(rawValue)
+          status = "counted"
+        except ValueError:
+          value = None
+          status = "unavailable"
+
+      runtimeText = fields[3].strip()
+      runningText = fields[4].strip().removesuffix("%")
+      event = {
+        "name": fields[2].strip(),
+        "value": value,
+        "unit": fields[1].strip() or None,
+        "runtime_ns": _perfNumber(runtimeText) if runtimeText else None,
+        "running_percent": float(runningText) if runningText else None,
+        "status": status,
+      }
+      if status == "unavailable":
+        event["raw_value"] = rawValue
+      events.append(event)
+  return {"events": events, "metadata_lines": metadataLines}
+
+
+def _usablePerfEvent(events, name):
+  matches = [event for event in events if event["name"] == name]
+  if len(matches) != 1:
+    return None
+  event = matches[0]
+  if event["status"] != "counted" or event["value"] is None:
+    return None
+  return event
+
+
+def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, resolvedPerfEvents, perfData):
+  competition = c.competition
+  events = perfData["events"] if perfData is not None else []
+  cycles = _usablePerfEvent(events, "cycles")
+  instructions = _usablePerfEvent(events, "instructions")
+  taskClock = _usablePerfEvent(events, "task-clock")
+  measuredTasks = summary["measuredTasks"]
+  measuredElapsedSec = summary["measuredElapsedMS"] / 1000.0
+
+  ipc = None
+  if cycles is not None and instructions is not None and cycles["value"] != 0:
+    ipc = instructions["value"] / cycles["value"]
+  cyclesPerQuery = None if cycles is None or measuredTasks == 0 else cycles["value"] / measuredTasks
+  instructionsPerQuery = None if instructions is None or measuredTasks == 0 else instructions["value"] / measuredTasks
+  effectiveCPUCount = None
+  if taskClock is not None and measuredElapsedSec != 0:
+    taskClockSeconds = None
+    if taskClock["unit"] == "msec":
+      taskClockSeconds = taskClock["value"] / 1000.0
+    elif taskClock["unit"] == "sec":
+      taskClockSeconds = taskClock["value"]
+    if taskClockSeconds is not None:
+      effectiveCPUCount = taskClockSeconds / measuredElapsedSec
+
+  requestedCategories = competition.requestedTaskCategories
+  return {
+    "schema_version": 1,
+    "benchmark": {
+      "mode": "search",
+      "source": c.index.dataSource.name,
+      "index": c.index.getPath(),
+      "queries": ["all"] if requestedCategories is None else list(requestedCategories),
+      "seed": competition.randomSeed,
+      "query_concurrency": c.numConcurrentQueries,
+      "search_concurrency": c.searchConcurrency,
+      "warmup_repetitions": competition.warmupTaskRepeatCount,
+      "measured_repetitions": competition.measuredTaskRepeatCount,
+      "tasks_per_category": competition.taskCountPerCat,
+      "measured_tasks": measuredTasks,
+      "measured_elapsed_sec": measuredElapsedSec,
+      "qps": summary["qps"],
+      "hardware_summary": True,
+      "static_seed": staticSeed,
+    },
+    "run": {"competitor": c.name, "iteration": iteration, "seed": seed},
+    "perf": {
+      "enabled": perfEnabled,
+      "control": competition.perfControl,
+      "requested_events": list(resolvedPerfEvents),
+      "events": events,
+      "metadata_lines": perfData["metadata_lines"] if perfData is not None else [],
+    },
+    "derived": {
+      "ipc": ipc,
+      "cycles_per_query": cyclesPerQuery,
+      "instructions_per_query": instructionsPerQuery,
+      "effective_cpu_count": effectiveCPUCount,
+    },
+  }
+
+
+def writeJSONAtomically(path, value):
+  directory = os.path.dirname(path)
+  fd, temporaryPath = tempfile.mkstemp(prefix=".result-", suffix=".json.tmp", dir=directory)
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+      json.dump(value, f, indent=2, allow_nan=False)
+      f.write("\n")
+    os.replace(temporaryPath, path)
+  except Exception:
+    if os.path.exists(temporaryPath):
+      os.remove(temporaryPath)
+    raise
 
 
 def parse_times_line(task, line):
@@ -1458,6 +1599,15 @@ class RunAlgs:
         tasks_winddown_ms = summary["measuredElapsedMS"]
         avg_cpu_cores = summary["avgCPUCores"]
         qpss = (summary["qps"],)
+        resultJSONFile = self.getSearchResultJSONPath(iter, c)
+        if resultJSONFile is not None:
+          perfData = None
+          if PERF_EXE is not None:
+            if not os.path.exists(perfStatFile):
+              raise RuntimeError("perf stat output is missing: %s" % perfStatFile)
+            perfData = parsePerfStat(perfStatFile)
+          structuredResult = buildHardwareResult(c, iter, seed, staticSeed, summary, PERF_EXE is not None, resolvedPerfEvents, perfData)
+          writeJSONAtomically(resultJSONFile, structuredResult)
       else:
         raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059
         qpss = self.compute_qps(raw_results, tasks_winddown_ms, exactPhases=exactPhases)
@@ -1471,6 +1621,8 @@ class RunAlgs:
         print(f"  QPS: {qpss[0]:.1f}")
         print(f"  CPU cores used: {avg_cpu_cores:.1f}")
         print(f"  log: {logFile} + {processLogFile}")
+        if hardwareSummary and resultJSONFile is not None:
+          print(f"  result: {resultJSONFile}")
 
       return logFile
 
@@ -1496,6 +1648,11 @@ class RunAlgs:
       os.path.join(iterationDir, "profile.jfr"),
       os.path.join(iterationDir, "perf.stat"),
     )
+
+  def getSearchResultJSONPath(self, iter, c):
+    if getattr(self, "outputDir", None) is None:
+      return None
+    return os.path.join(self.outputDir, c.name, f"iteration-{iter}", "result.json")
 
   def computeTaskLatencies(self, inputList, catSet):  # noqa: PLR6301
     resultLatencyMetrics = {}
