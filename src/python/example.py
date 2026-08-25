@@ -16,10 +16,26 @@
 # limitations under the License.
 
 import argparse
+import datetime
 import os
 import re
+import secrets
 
 import competition
+
+
+def createRunDirectory(outputRoot, now=None, randomSuffix=None):
+  outputRoot = os.path.abspath(os.path.expanduser(outputRoot))
+  os.makedirs(outputRoot, exist_ok=True)
+  timestamp = (datetime.datetime.now() if now is None else now).strftime("%Y-%m-%d-%H-%M-%S")
+  while True:
+    suffix = secrets.randbelow(10000) if randomSuffix is None else randomSuffix()
+    runDirectory = os.path.join(outputRoot, f"{timestamp}-{suffix:04d}")
+    try:
+      os.mkdir(runDirectory)
+    except FileExistsError:
+      continue
+    return runDirectory
 
 
 def positiveInteger(value):
@@ -230,6 +246,10 @@ if __name__ == "__main__":
     action="store_true",
     help="Record only measured count, elapsed time, and QPS; requires complete exact workload phases",
   )
+  parser.add_argument(
+    "--output-root",
+    help="Root directory for per-invocation search artifacts (default: constants.LOGS_DIR)",
+  )
   args = parser.parse_args()
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
@@ -237,13 +257,19 @@ if __name__ == "__main__":
   validatePerfControl(parser, args, exactPhases)
   validateHardwareSummary(parser, args, exactPhases)
   perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
+  outputRoot = args.output_root
+  if outputRoot is None:
+    outputRoot = getattr(getattr(competition, "constants", None), "LOGS_DIR", None)
+  runDirectory = createRunDirectory(outputRoot) if args.mode != "build" and outputRoot is not None else None
+  if runDirectory is not None:
+    print(f"Run directory: {runDirectory}")
   if args.verbose:
     print("Running benchmarks with the following args: %s" % args)
 
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.search_concurrency != 0
   if exactPhases is None:
-    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, randomSeed=args.seed, perfEvents=perfEvents, verbose=args.verbose)
+    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, randomSeed=args.seed, perfEvents=perfEvents, verbose=args.verbose, outputDir=runDirectory)
   else:
     comp = competition.Competition(
       verifyCounts=not countsAreCorrect,
@@ -256,6 +282,7 @@ if __name__ == "__main__":
       perfEvents=perfEvents,
       verbose=args.verbose,
       hardwareSummary=args.hardware_summary,
+      outputDir=runDirectory,
     )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)

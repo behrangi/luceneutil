@@ -514,8 +514,11 @@ def parseResults(resultsFiles):
       # nocommit -- why would we pass this file in, if it does not exist?
       continue
 
-    if os.path.exists(resultsFile + ".stdout") and os.path.getsize(resultsFile + ".stdout") > 50 * 1024:
-      raise RuntimeError("%s.stdout is %d bytes; leftover System.out.println?" % (resultsFile, os.path.getsize(resultsFile + ".stdout")))
+    processLogFile = resultsFile + ".stdout"
+    if os.path.basename(resultsFile) == "result.log":
+      processLogFile = os.path.join(os.path.dirname(resultsFile), "process.log")
+    if os.path.exists(processLogFile) and os.path.getsize(processLogFile) > 50 * 1024:
+      raise RuntimeError("%s is %d bytes; leftover System.out.println?" % (processLogFile, os.path.getsize(processLogFile)))
 
     tasksWindownMS = -1
     avgCPUCores = -1
@@ -1006,7 +1009,7 @@ reCoreJar = re.compile("lucene-core-[0-9]+\\.[0-9]+\\.[0-9]+(?:-SNAPSHOT)?\\.jar
 
 
 class RunAlgs:
-  def __init__(self, javaCommand, verifyScores, verifyCounts, verbose=True):
+  def __init__(self, javaCommand, verifyScores, verifyCounts, verbose=True, outputDir=None):
     self.logCounter = 0
     self.results = []
     self.compiled = set()
@@ -1015,6 +1018,7 @@ class RunAlgs:
     self.verifyCounts = verifyCounts
     self.exactPhases = False
     self.verbose = verbose
+    self.outputDir = outputDir
     if verbose:
       print()
       print("JAVA:\n%s" % os.popen("%s -version 2>&1" % javaCommand).read())
@@ -1309,7 +1313,7 @@ class RunAlgs:
     # randomSeed = random.randint(-1000000, 1000000)
 
     cp = classPathToString(getClassPath(c.checkout))
-    logFile = "%s/%s.%s.%d" % (constants.LOGS_DIR, id, c.name, iter)
+    logFile, processLogFile, jfrFile = self.getSearchArtifactPaths(iter, id, c, create=True)
 
     if c.doSort:
       doSort = "-sort"
@@ -1332,7 +1336,7 @@ class RunAlgs:
       command += c.javaCommand.split()
 
       command += [
-        get_profiler_jvm_args(f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr", "      ", printInfo=verbose),
+        get_profiler_jvm_args(jfrFile, "      ", printInfo=verbose),
         "-XX:+UnlockDiagnosticVMOptions",
         "-XX:+DebugNonSafepoints",
         # uncomment the line below to enable remote debugging
@@ -1405,7 +1409,7 @@ class RunAlgs:
       p = subprocess.Popen(command, shell=False, stdout=subprocess.PIPE, stdin=subprocess.PIPE, stderr=subprocess.STDOUT)
 
       mode = "wbu" if PYTHON_MAJOR_VER < 3 else "wb"
-      f = open(logFile + ".stdout", mode)
+      f = open(processLogFile, mode)
       if not verbose:
         f.write(("COMMAND: %s\n" % " ".join(command)).encode("utf-8"))
       while True:
@@ -1425,15 +1429,15 @@ class RunAlgs:
       if exitStatus != 0:
         print()
         print(f"SearchPerfTest failed with exit status {exitStatus}")
-        print(f"  log: {logFile}.stdout")
-        with open(logFile + ".stdout") as s:
+        print(f"  log: {processLogFile}")
+        with open(processLogFile) as s:
           lines = s.readlines()
         if not verbose:
           lines = lines[-40:]
           print("  final output:")
         for line in lines:
           print(line.rstrip())
-        raise RuntimeError("SearchPerfTest failed; see log %s.stdout" % logFile)
+        raise RuntimeError("SearchPerfTest failed; see log %s" % processLogFile)
 
       if verbose:
         print("      %.1f s" % (time.time() - t0))
@@ -1455,16 +1459,31 @@ class RunAlgs:
           print(f"  measured elapsed: {tasks_winddown_ms / 1000.0:.3f} s")
         print(f"  QPS: {qpss[0]:.1f}")
         print(f"  CPU cores used: {avg_cpu_cores:.1f}")
-        print(f"  log: {logFile} + {logFile}.stdout")
+        print(f"  log: {logFile} + {processLogFile}")
 
       return logFile
 
   def getSearchLogFiles(self, id, c):  # noqa: PLR6301
     logFiles = []
     for iter in range(c.competition.jvmCount):
-      logFile = "%s/%s.%s.%d" % (constants.LOGS_DIR, id, c.name, iter)
+      logFile, unused_process_log, unused_jfr_file = self.getSearchArtifactPaths(iter, id, c, create=False)
       logFiles.append(logFile)
     return logFiles
+
+  def getSearchArtifactPaths(self, iter, id, c, create=False):
+    outputDir = getattr(self, "outputDir", None)
+    if outputDir is None:
+      logFile = "%s/%s.%s.%d" % (constants.LOGS_DIR, id, c.name, iter)
+      return logFile, logFile + ".stdout", f"{constants.LOGS_DIR}/bench-search-{id}-{c.name}-{iter}.jfr"
+
+    iterationDir = os.path.join(outputDir, c.name, f"iteration-{iter}")
+    if create:
+      os.makedirs(iterationDir, exist_ok=False)
+    return (
+      os.path.join(iterationDir, "result.log"),
+      os.path.join(iterationDir, "process.log"),
+      os.path.join(iterationDir, "profile.jfr"),
+    )
 
   def computeTaskLatencies(self, inputList, catSet):  # noqa: PLR6301
     resultLatencyMetrics = {}

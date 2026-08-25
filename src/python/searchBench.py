@@ -104,6 +104,7 @@ def run(
   competitors = [challenger, base]
   verbose = getattr(base.competition, "verbose", False)
   hardwareSummary = getattr(base.competition, "hardwareSummary", False)
+  outputDir = getattr(base.competition, "outputDir", None)
   if hardwareSummary != getattr(challenger.competition, "hardwareSummary", False):
     raise RuntimeError("baseline and candidate must use the same hardware-summary setting")
 
@@ -121,7 +122,10 @@ def run(
     validateTaskCategories(requestedTaskCategories, tasksFile)
 
   # verifyScores = False
-  r = benchUtil.RunAlgs(constants.JAVA_COMMAND, verifyScores, verifyCounts, verbose=verbose)
+  if outputDir is None:
+    r = benchUtil.RunAlgs(constants.JAVA_COMMAND, verifyScores, verifyCounts, verbose=verbose)
+  else:
+    r = benchUtil.RunAlgs(constants.JAVA_COMMAND, verifyScores, verifyCounts, verbose=verbose, outputDir=outputDir)
   if "-noc" not in sys.argv:
     if verbose:
       print()
@@ -188,10 +192,11 @@ def run(
       staticSeed = rand.randint(-10000000, 1000000)
 
       # Remove old log files:
-      for c in competitors:
-        for fileName in r.getSearchLogFiles(id, c):
-          if os.path.exists(fileName):
-            os.remove(fileName)
+      if outputDir is None:
+        for c in competitors:
+          for fileName in r.getSearchLogFiles(id, c):
+            if os.path.exists(fileName):
+              os.remove(fileName)
 
       for iter in range(base.competition.jvmCount):
         if verbose:

@@ -388,6 +388,10 @@ class Competitor:
     results = []
 
     for size in stackSize:
+      if self.competition.outputDir is None:
+        jfrFiles = glob.glob(f"{constants.LOGS_DIR}/bench-search-{id}-{self.name}-*.jfr")
+      else:
+        jfrFiles = glob.glob(os.path.join(self.competition.outputDir, self.name, "iteration-*", "profile.jfr"))
       command = (
         constants.JAVA_COMMAND.split(" ")
         + [
@@ -399,7 +403,7 @@ class Competitor:
           "-Dtests.profile.linenumbers=true",
           "org.apache.lucene.gradle.plugins.java.ProfileResults",
         ]
-        + glob.glob(f"{constants.LOGS_DIR}/bench-search-{id}-{self.name}-*.jfr")
+        + jfrFiles
       )
 
       print(f"JFR aggregation command: {' '.join(command)}")
@@ -474,6 +478,7 @@ class Competition:
     perfEvents=None,
     verbose=False,
     hardwareSummary=False,
+    outputDir=None,
   ):
     self.cold = cold
     self.competitors = []
@@ -520,6 +525,7 @@ class Competition:
     self.perfEvents = None if perfEvents is None else tuple(perfEvents)
     self.verbose = verbose
     self.hardwareSummary = hardwareSummary
+    self.outputDir = outputDir
 
     # JVM count: how many times to run the java process for each
     # competitor.  Increase this to get more repeatable results, because each run can compile the
@@ -599,9 +605,10 @@ class Competition:
     else:
       challenger = self.competitors[0]
 
-    for fileName in glob.glob(f"{constants.LOGS_DIR}/bench-search-*.jfr"):
-      print("Removing old JFR %s..." % fileName)
-      os.remove(fileName)
+    if self.outputDir is None:
+      for fileName in glob.glob(f"{constants.LOGS_DIR}/bench-search-*.jfr"):
+        print("Removing old JFR %s..." % fileName)
+        os.remove(fileName)
 
     # If any competitor's index uses waitForCommit=False, the indexer calls rollback() instead of
     # commit(), so no segments file is written and that index cannot be searched.  Since the search
