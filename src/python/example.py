@@ -158,6 +158,12 @@ def parsePerfEvents(parser, value, mode):
   return tuple(events)
 
 
+def validateJVMOptions(parser, args):
+  for argument in args.jvm_arg:
+    if re.match(r"^-XX:\+Use.*GC$", argument):
+      parser.error("GC selector JVM arguments must use --gc instead of --jvm-arg")
+
+
 def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEvents):
   indexPath = index.getPath() if hasattr(index, "getPath") else (args.index_path or "generated from benchmark configuration")
   defaultQueryConcurrency = getattr(getattr(competition, "constants", None), "SEARCH_NUM_CONCURRENT_QUERIES", "SEARCH_NUM_CONCURRENT_QUERIES")
@@ -185,6 +191,10 @@ def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEv
     print(f"  perf events: {','.join(resolvedPerfEvents)}")
     if args.hardware_summary:
       print("  hardware summary: enabled")
+    print(f"  profile: {args.profile}")
+    print(f"  GC: {args.gc if args.gc is not None else 'existing Java command'}")
+    if args.jvm_arg:
+      print(f"  extra JVM arguments: {args.jvm_arg}")
   print()
 
 
@@ -241,6 +251,13 @@ if __name__ == "__main__":
     help="Comma-separated perf stat events for this run (default: existing constants.PERF_STATS)",
   )
   parser.add_argument("--verbose", action="store_true", help="Print detailed benchmark diagnostics to the console")
+  parser.add_argument("--jvm-arg", action="append", default=[], help="Additional JVM argument; repeat once per argv element")
+  parser.add_argument(
+    "--gc",
+    choices=("parallel", "g1", "default"),
+    help="Replace the existing ParallelGC default for search: parallel, g1, or the JVM default collector",
+  )
+  parser.add_argument("--profile", choices=("jfr", "none"), default="jfr", help="Search profiling mode (default: jfr)")
   parser.add_argument(
     "--hardware-summary",
     action="store_true",
@@ -257,6 +274,7 @@ if __name__ == "__main__":
   validatePerfControl(parser, args, exactPhases)
   validateHardwareSummary(parser, args, exactPhases)
   perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
+  validateJVMOptions(parser, args)
   outputRoot = args.output_root
   if outputRoot is None:
     outputRoot = getattr(getattr(competition, "constants", None), "LOGS_DIR", None)
@@ -269,7 +287,11 @@ if __name__ == "__main__":
   sourceData = competition.sourceData(args.source)
   countsAreCorrect = args.search_concurrency != 0
   if exactPhases is None:
-    comp = competition.Competition(verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups, randomSeed=args.seed, perfEvents=perfEvents, verbose=args.verbose, outputDir=runDirectory)
+    comp = competition.Competition(
+      verifyCounts=not countsAreCorrect, jvmCount=args.iterations, taskRepeatCount=args.warmups,
+      randomSeed=args.seed, perfEvents=perfEvents, verbose=args.verbose, outputDir=runDirectory,
+      jvmArgs=args.jvm_arg, gc=args.gc, profile=args.profile,
+    )
   else:
     comp = competition.Competition(
       verifyCounts=not countsAreCorrect,
@@ -283,6 +305,9 @@ if __name__ == "__main__":
       verbose=args.verbose,
       hardwareSummary=args.hardware_summary,
       outputDir=runDirectory,
+      jvmArgs=args.jvm_arg,
+      gc=args.gc,
+      profile=args.profile,
     )
   configure_mode(comp, args.mode)
   includePK = configureTaskCategories(comp, requestedTaskCategories)

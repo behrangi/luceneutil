@@ -378,6 +378,8 @@ class Competitor:
     self.pollute = pollute
 
   def getAggregateProfilerResult(self, id, mode, count=30, stackSize=1):
+    if getattr(self.competition, "profile", "jfr") == "none":
+      return []
     # we accept a sequence of stack sizes and will re-aggregate JFR results at each
     if type(stackSize) is int:
       stackSize = (stackSize,)
@@ -479,6 +481,9 @@ class Competition:
     verbose=False,
     hardwareSummary=False,
     outputDir=None,
+    jvmArgs=(),
+    gc=None,
+    profile="jfr",
   ):
     self.cold = cold
     self.competitors = []
@@ -526,6 +531,9 @@ class Competition:
     self.verbose = verbose
     self.hardwareSummary = hardwareSummary
     self.outputDir = outputDir
+    self.jvmArgs = tuple(jvmArgs)
+    self.gc = gc
+    self.profile = profile
 
     # JVM count: how many times to run the java process for each
     # competitor.  Increase this to get more repeatable results, because each run can compile the
@@ -605,7 +613,7 @@ class Competition:
     else:
       challenger = self.competitors[0]
 
-    if self.outputDir is None:
+    if self.outputDir is None and self.profile == "jfr":
       for fileName in glob.glob(f"{constants.LOGS_DIR}/bench-search-*.jfr"):
         print("Removing old JFR %s..." % fileName)
         os.remove(fileName)

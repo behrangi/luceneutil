@@ -100,7 +100,7 @@ def load_bench_util():
   return benchUtil
 
 
-def run_search(bench_util, output_directory, perf_executable, perf_control=False, perf_events=None):
+def run_search(bench_util, output_directory, perf_executable, perf_control=False, perf_events=None, profile="jfr", jvm_args=(), gc=None):
   class Process:
     stdout = io.BytesIO(b"java diagnostic\n")
 
@@ -126,6 +126,7 @@ def run_search(bench_util, output_directory, perf_executable, perf_control=False
     warmupTaskRepeatCount=0 if exact else None,
     measuredTaskRepeatCount=1 if exact else None,
     perfControl=perf_control, perfEvents=perf_events, hardwareSummary=False,
+    profile=profile, jvmArgs=tuple(jvm_args), gc=gc,
   )
   index = types.SimpleNamespace(getPath=lambda: "index", facets=None)
   competitor = types.SimpleNamespace(

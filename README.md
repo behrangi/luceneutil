@@ -208,6 +208,8 @@ For large hardware-characterization workloads, add `--hardware-summary` to a com
 
 Search invocations launched through `example.py` create one unique directory beneath `--output-root` (default: `constants.LOGS_DIR`). Its filesystem-safe ID has the form `YYYY-MM-DD-HH-MM-SS-RANDOM`. Each competitor and JVM iteration receives its own directory containing `result.log`, `process.log`, and `profile.jfr`; when perf is available, its delimiter-separated raw counter output is written separately to `perf.stat`. Organized exact `--hardware-summary` runs also atomically publish a versioned `result.json` containing the resolved configuration, authoritative measured summary, raw perf event values/status, and mechanically derived metrics. The resolved absolute run directory is printed when execution begins.
 
+Search profiling defaults to the existing JFR behavior. Use `--profile none` to omit JFR recording and its `profile.jfr` artifact, or explicitly select `--profile jfr`. Repeat `--jvm-arg=<argument>` to append JVM argv elements without shell splitting. Use `--gc parallel`, `--gc g1`, or `--gc default` to control the existing ParallelGC default safely; GC selectors are rejected through `--jvm-arg` to avoid conflicting collectors.
+
 For quick patch testing, you can control the number of JVM iterations and query repetitions to speed up the benchmark:
 ```bash
 # Quick test: 5 JVM iterations, 10 query repetitions per JVM

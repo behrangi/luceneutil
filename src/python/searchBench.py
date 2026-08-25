@@ -234,7 +234,7 @@ def run(
         os.remove(newTasksFile)
 
     # TODO: maybe print this after each iter, not just in the end, for the impatient/progressive?
-    if verbose:
+    if verbose and getattr(base.competition, "profile", "jfr") == "jfr":
       for mode in "cpu", "heap":
         for c in competitors:
           print(f"\n{mode.upper()} merged search profile for {c.name}:")

@@ -562,7 +562,7 @@ def _usablePerfEvent(events, name):
   return event
 
 
-def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, resolvedPerfEvents, perfData):
+def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, resolvedPerfEvents, perfData, javaExecutable, jvmArgs, profile):
   competition = c.competition
   events = perfData["events"] if perfData is not None else []
   cycles = _usablePerfEvent(events, "cycles")
@@ -607,6 +607,8 @@ def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, re
       "static_seed": staticSeed,
     },
     "run": {"competitor": c.name, "iteration": iteration, "seed": seed},
+    "jvm": {"java": javaExecutable, "args": list(jvmArgs)},
+    "profiling": {"type": profile},
     "perf": {
       "enabled": perfEnabled,
       "control": competition.perfControl,
@@ -1105,6 +1107,43 @@ def get_profiler_jvm_args(jfr_file_name, indent="", printInfo=True):
   return args
 
 
+def resolveSearchJavaCommand(javaCommand, gc=None):
+  command = shlex.split(javaCommand)
+  if not command:
+    raise RuntimeError("Java command is empty")
+  if gc is None:
+    return command
+
+  parallelGC = "-XX:+UseParallelGC"
+  enabledGCSelectors = [argument for argument in command[1:] if re.match(r"^-XX:\+Use.*GC$", argument)]
+  unexpectedSelectors = [argument for argument in enabledGCSelectors if argument != parallelGC]
+  if unexpectedSelectors:
+    raise RuntimeError("--gc cannot replace existing GC selector(s): %s" % ", ".join(unexpectedSelectors))
+  if command.count(parallelGC) > 1:
+    raise RuntimeError("Java command contains duplicate -XX:+UseParallelGC options")
+
+  if gc == "parallel":
+    if parallelGC not in command:
+      command.append(parallelGC)
+  elif gc == "g1":
+    if parallelGC in command:
+      command[command.index(parallelGC)] = "-XX:+UseG1GC"
+    else:
+      command.append("-XX:+UseG1GC")
+  elif gc == "default":
+    if parallelGC in command:
+      command.remove(parallelGC)
+  else:
+    raise RuntimeError("unknown GC selection: %s" % gc)
+  return command
+
+
+def validateExtraJVMArgs(jvmArgs):
+  for argument in jvmArgs:
+    if re.match(r"^-XX:\+Use.*GC$", argument):
+      raise RuntimeError("GC selector JVM arguments must use --gc instead of --jvm-arg")
+
+
 def run(cmd, logFile=None, indent="    ", vmstatLogFile=None, topLogFile=None, verbose=True):
   if verbose:
     print("%srun: %s, cwd=%s vmstatLogFile=%s topLogFile=%s" % (indent, cmd, os.getcwd(), vmstatLogFile, topLogFile))
@@ -1465,6 +1504,9 @@ class RunAlgs:
     perfControl = getattr(c.competition, "perfControl", False)
     perfEvents = getattr(c.competition, "perfEvents", None)
     hardwareSummary = getattr(c.competition, "hardwareSummary", False)
+    profile = getattr(c.competition, "profile", "jfr")
+    extraJVMArgs = tuple(getattr(c.competition, "jvmArgs", ()))
+    validateExtraJVMArgs(extraJVMArgs)
     if perfEvents is not None and PERF_EXE is None:
       raise RuntimeError("--perf-events requires a perf executable")
     resolvedPerfEvents = PERF_STATS if perfEvents is None else perfEvents
@@ -1477,15 +1519,21 @@ class RunAlgs:
         command += ["-e", ",".join(resolvedPerfEvents)]
         if perfControl:
           command += ["--delay=-1", "--control=fifo:%s,%s" % (perfControlResources.controlPath, perfControlResources.ackPath)]
-      command += c.javaCommand.split()
-
-      command += [
-        get_profiler_jvm_args(jfrFile, "      ", printInfo=verbose),
+      resolvedJavaCommand = resolveSearchJavaCommand(c.javaCommand, getattr(c.competition, "gc", None))
+      javaExecutable = resolvedJavaCommand[0]
+      jvmArgs = resolvedJavaCommand[1:]
+      if profile == "jfr":
+        jvmArgs.append(get_profiler_jvm_args(jfrFile, "      ", printInfo=verbose))
+      elif profile != "none":
+        raise RuntimeError("unknown search profile: %s" % profile)
+      jvmArgs += [
         "-XX:+UnlockDiagnosticVMOptions",
         "-XX:+DebugNonSafepoints",
         # uncomment the line below to enable remote debugging
         # '-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=localhost:7891'
       ]
+      jvmArgs += extraJVMArgs
+      command += [javaExecutable, *jvmArgs]
 
       w = lambda *xs: [command.append(str(x)) for x in xs]
       w("-classpath", cp)
@@ -1606,7 +1654,10 @@ class RunAlgs:
             if not os.path.exists(perfStatFile):
               raise RuntimeError("perf stat output is missing: %s" % perfStatFile)
             perfData = parsePerfStat(perfStatFile)
-          structuredResult = buildHardwareResult(c, iter, seed, staticSeed, summary, PERF_EXE is not None, resolvedPerfEvents, perfData)
+          structuredResult = buildHardwareResult(
+            c, iter, seed, staticSeed, summary, PERF_EXE is not None, resolvedPerfEvents, perfData,
+            javaExecutable, jvmArgs, profile,
+          )
           writeJSONAtomically(resultJSONFile, structuredResult)
       else:
         raw_results, heap_base, tasks_winddown_ms, avg_cpu_cores = parseResults([logFile])  # noqa: RUF059

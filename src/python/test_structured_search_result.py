@@ -47,7 +47,10 @@ class StructuredSearchResultTest(unittest.TestCase):
       ],
       "metadata_lines": [],
     }
-    result = bench_util.buildHardwareResult(competitor, 3, 123, 456, summary, True, ("cycles", "instructions"), perf_data)
+    result = bench_util.buildHardwareResult(
+      competitor, 3, 123, 456, summary, True, ("cycles", "instructions"), perf_data,
+      "/jdk/bin/java", ("-server", "-Xmx2g"), "none",
+    )
 
     self.assertEqual(1, result["schema_version"])
     self.assertEqual(
@@ -60,6 +63,8 @@ class StructuredSearchResultTest(unittest.TestCase):
       result["benchmark"],
     )
     self.assertEqual({"competitor": "candidate", "iteration": 3, "seed": 123}, result["run"])
+    self.assertEqual({"java": "/jdk/bin/java", "args": ["-server", "-Xmx2g"]}, result["jvm"])
+    self.assertEqual({"type": "none"}, result["profiling"])
     self.assertEqual(["cycles", "instructions"], result["perf"]["requested_events"])
     self.assertEqual(2.5, result["derived"]["ipc"])
     self.assertEqual(2.0, result["derived"]["cycles_per_query"])
@@ -75,7 +80,7 @@ class StructuredSearchResultTest(unittest.TestCase):
     result = bench_util.buildHardwareResult(
       make_competitor(), 0, 1, 2,
       {"measuredTasks": 10, "measuredElapsedMS": 100.0, "qps": 100.0, "avgCPUCores": -1.0},
-      True, ("cycles", "instructions"), perf_data,
+      True, ("cycles", "instructions"), perf_data, "java", (), "jfr",
     )
     self.assertEqual(75.0, result["perf"]["events"][0]["running_percent"])
     self.assertEqual(2.5, result["derived"]["ipc"])
@@ -86,7 +91,7 @@ class StructuredSearchResultTest(unittest.TestCase):
     result = bench_util.buildHardwareResult(
       make_competitor(), 0, 1, 2,
       {"measuredTasks": 10, "measuredElapsedMS": 100.0, "qps": 100.0, "avgCPUCores": -1.0},
-      False, ("cycles",), None,
+      False, ("cycles",), None, "java", (), "jfr",
     )
     self.assertEqual(
       {"ipc": None, "cycles_per_query": None, "instructions_per_query": None, "effective_cpu_count": None},
@@ -148,7 +153,7 @@ def make_competitor(name="candidate"):
     taskRepeatCount=20, taskCountPerCat=10, groupByCat=False,
     warmupTaskRepeatCount=20, measuredTaskRepeatCount=50,
     perfControl=True, perfEvents=("cycles", "instructions"), hardwareSummary=True,
-    requestedTaskCategories=("HighTerm",), randomSeed=-7,
+    requestedTaskCategories=("HighTerm",), randomSeed=-7, profile="jfr", jvmArgs=(), gc=None,
   )
   index = types.SimpleNamespace(
     getPath=lambda: "/index", facets=None,
