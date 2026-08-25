@@ -174,6 +174,8 @@ def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEv
   print(f"  index: {indexPath}")
   print(f"  seed: {comp.randomSeed}")
   print(f"  JVM iterations: {args.iterations}")
+  if args.mode == "build":
+    print(f"  index threads: {args.index_threads}")
   if args.mode != "build":
     queries = "all" if requestedTaskCategories is None else ",".join(requestedTaskCategories)
     resolvedPerfEvents = getattr(getattr(competition, "benchUtil", None), "PERF_STATS", ("constants.PERF_STATS",)) if perfEvents is None else perfEvents
@@ -213,6 +215,7 @@ if __name__ == "__main__":
     "--index-path",
     help="Exact canonical luceneutil index root to build or search (the complete benchmark-created directory, not only its inner index/ subdirectory)",
   )
+  parser.add_argument("--index-threads", type=positiveInteger, default=1, help="Number of concurrent document indexing threads (default: 1)")
   parser.add_argument(
     "--queries",
     default="all",
@@ -316,6 +319,7 @@ if __name__ == "__main__":
     args.baseline,
     sourceData,
     indexPath=args.index_path,
+    numThreads=args.index_threads,
     addDVFields=True,
     useCMS=True,
     mergePolicy="TieredMergePolicy",
@@ -353,6 +357,7 @@ if __name__ == "__main__":
     candidate_index = comp.newIndex(
       args.candidate,
       sourceData,
+      numThreads=args.index_threads,
       addDVFields=True,
       useCMS=True,
       mergePolicy="TieredMergePolicy",
