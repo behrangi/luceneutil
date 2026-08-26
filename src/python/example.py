@@ -20,6 +20,7 @@ import datetime
 import os
 import re
 import secrets
+import sys
 
 import competition
 
@@ -164,6 +165,35 @@ def validateJVMOptions(parser, args):
       parser.error("GC selector JVM arguments must use --gc instead of --jvm-arg")
 
 
+def validateKnnOptions(parser, args):
+  if args.mode != "search":
+    parser.error("--workload knn requires --mode search")
+  required = (
+    ("--knn-index-path", args.knn_index_path),
+    ("--knn-docs", args.knn_docs),
+    ("--knn-queries", args.knn_queries),
+    ("--knn-doc-count", args.knn_doc_count),
+    ("--knn-dim", args.knn_dim),
+  )
+  missing = [name for name, value in required if value is None]
+  if missing:
+    parser.error("--workload knn requires " + ", ".join(missing))
+  args.knn_index_path = os.path.abspath(os.path.expanduser(args.knn_index_path))
+  args.knn_docs = os.path.abspath(os.path.expanduser(args.knn_docs))
+  args.knn_queries = os.path.abspath(os.path.expanduser(args.knn_queries))
+  if not os.path.isdir(args.knn_index_path):
+    parser.error("--knn-index-path must be an existing directory")
+  for option, path in (("--knn-docs", args.knn_docs), ("--knn-queries", args.knn_queries)):
+    if not os.path.isfile(path):
+      parser.error(f"{option} must be an existing file")
+  if args.reindex:
+    parser.error("--workload knn search does not support --reindex")
+  if args.hardware_summary:
+    parser.error("--hardware-summary is implicit for --workload knn")
+  if args.warmups is not None or any(value is not None for value in (args.warmup_repetitions, args.measured_repetitions, args.tasks_per_category)):
+    parser.error("KnnGraphTester uses one warmup pass and one measured pass; normal-search repetition options do not apply to --workload knn")
+
+
 def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEvents):
   indexPath = index.getPath() if hasattr(index, "getPath") else (args.index_path or "generated from benchmark configuration")
   defaultQueryConcurrency = getattr(getattr(competition, "constants", None), "SEARCH_NUM_CONCURRENT_QUERIES", "SEARCH_NUM_CONCURRENT_QUERIES")
@@ -204,6 +234,7 @@ def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEv
 # Baseline here is ../lucene_baseline versus ../lucene_candidate
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(prog="Local Benchmark Run", description="Run a local benchmark on provided source dataset.")
+  parser.add_argument("--workload", choices=("search", "knn"), default="search", help="Benchmark workload (default: search)")
   parser.add_argument("-s", "-source", "--source", help="Data source to run the benchmark on.")
   parser.add_argument(
     "--mode",
@@ -270,7 +301,78 @@ if __name__ == "__main__":
     "--output-root",
     help="Root directory for per-invocation search artifacts (default: constants.LOGS_DIR)",
   )
+  parser.add_argument("--knn-index-path", help="Existing KnnGraphTester index directory")
+  parser.add_argument("--knn-docs", help="KNN document vector file used to build the existing index")
+  parser.add_argument("--knn-queries", help="KNN query vector file")
+  parser.add_argument("--knn-doc-count", type=positiveInteger, help="Number of vectors in the existing KNN index")
+  parser.add_argument("--knn-dim", type=positiveInteger, help="Vector dimensions")
+  parser.add_argument("--knn-top-k", type=positiveInteger, default=100, help="KNN top K (default: 100)")
+  parser.add_argument("--knn-fanout", type=nonNegativeInteger, default=100, help="Additional KNN search fanout (default: 100)")
+  parser.add_argument("--knn-query-start-index", type=nonNegativeInteger, default=0, help="First query vector ordinal (default: 0)")
+  parser.add_argument("--knn-query-count", type=positiveInteger, default=100, help="Number of query vectors (default: 100)")
+  parser.add_argument("--knn-search-threads", type=searchConcurrency, default=0, help="KNN intra-query search threads (default: 0)")
+  parser.add_argument("--knn-quantization", choices=("float", "4bit-compressed"), default="float", help="Existing KNN index representation (default: float)")
+  parser.add_argument("--knn-max-conn", type=positiveInteger, default=32, help="Existing HNSW maxConn (default: 32)")
+  parser.add_argument("--knn-beam-width-index", type=positiveInteger, default=100, help="Existing HNSW beamWidthIndex (default: 100)")
   args = parser.parse_args()
+  if args.workload == "knn":
+    validateJVMOptions(parser, args)
+    validateKnnOptions(parser, args)
+    perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
+    if args.perf_control:
+      perfEvents = tuple(getattr(getattr(competition, "benchUtil", None), "PERF_STATS", ())) if perfEvents is None else perfEvents
+    elif perfEvents is not None:
+      parser.error("--perf-events requires --perf-control for --workload knn")
+    else:
+      perfEvents = ()
+    outputRoot = args.output_root
+    if outputRoot is None:
+      outputRoot = getattr(getattr(competition, "constants", None), "LOGS_DIR", None)
+    if outputRoot is None:
+      parser.error("--workload knn requires --output-root when constants.LOGS_DIR is unavailable")
+    runDirectory = createRunDirectory(outputRoot)
+    print(f"Run directory: {runDirectory}")
+    import knnHardwareBench
+
+    config = knnHardwareBench.Config(
+      indexPath=args.knn_index_path,
+      docsPath=args.knn_docs,
+      queriesPath=args.knn_queries,
+      docCount=args.knn_doc_count,
+      dim=args.knn_dim,
+      topK=args.knn_top_k,
+      fanout=args.knn_fanout,
+      queryStartIndex=args.knn_query_start_index,
+      queryCount=args.knn_query_count,
+      searchThreads=args.knn_search_threads,
+      quantization=args.knn_quantization,
+      maxConn=args.knn_max_conn,
+      beamWidthIndex=args.knn_beam_width_index,
+      seed=args.seed,
+      perfControl=args.perf_control,
+      perfEvents=perfEvents,
+      profile=args.profile,
+      jvmArgs=tuple(args.jvm_arg),
+      gc=args.gc,
+      verbose=args.verbose,
+    )
+    print("KNN search benchmark")
+    print(f"  index: {config.indexPath}")
+    print(f"  queries: {config.queriesPath}")
+    print(f"  query range: {config.queryStartIndex}..{config.queryStartIndex + config.queryCount - 1}")
+    print(f"  topK/fanout: {config.topK}/{config.fanout}")
+    print(f"  search threads: {config.searchThreads}")
+    print(f"  quantization: {config.quantization}")
+    print(f"  seed: {config.seed if config.seed is not None else 'JVM-generated'}")
+    print(f"  perf control: {'enabled' if config.perfControl else 'disabled'}")
+    print(f"  profile: {config.profile}\n")
+    knnHardwareBench.run(
+      config,
+      (("baseline", args.baseline), ("my_modified_version", args.candidate)),
+      args.iterations,
+      runDirectory,
+    )
+    sys.exit(0)
   normalize_and_validate_options(parser, args)
   requestedTaskCategories = parseRequestedTaskCategories(parser, args)
   exactPhases = configureExactPhases(parser, args)

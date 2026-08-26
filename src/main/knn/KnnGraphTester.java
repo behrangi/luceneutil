@@ -126,6 +126,7 @@ import org.apache.lucene.search.TopKnnCollector;
 
 import org.apache.lucene.util.quantization.QuantizedByteVectorValues.ScalarEncoding;
 import perf.SearchPerfTest.ThreadDetails;
+import perf.PerfControl;
 import static org.apache.lucene.search.DocIdSetIterator.NO_MORE_DOCS;
 //TODO Lucene may make these unavailable, we should pull in this from hppc directly
 
@@ -234,6 +235,8 @@ public class KnnGraphTester implements FormatterLogger {
   // sample 1 in every N distances when building the all-distances histogram
   private int allDistancesSampleEveryN = 1000;
   private SearchType searchType;
+  private Path perfControlPath;
+  private Path perfAckPath;
   private float resultSimilarity, decay;
 
   private KnnGraphTester() {
@@ -557,6 +560,12 @@ public class KnnGraphTester implements FormatterLogger {
         case "-seed":
           randomSeed = Long.parseLong(args[++iarg]);
           break;
+        case "-perfControlPath":
+          perfControlPath = Paths.get(args[++iarg]);
+          break;
+        case "-perfAckPath":
+          perfAckPath = Paths.get(args[++iarg]);
+          break;
         case "-hnswScoreHistogram":
           hnswScoreHistogram = true;
           break;
@@ -589,6 +598,12 @@ public class KnnGraphTester implements FormatterLogger {
     }
     if (operation == null && reindex == false) {
       usage();
+    }
+    if ((perfControlPath == null) != (perfAckPath == null)) {
+      throw new IllegalArgumentException("perf control requires both -perfControlPath and -perfAckPath");
+    }
+    if (perfControlPath != null && (operation == null || operation.equals("-search") == false && operation.equals("-search-and-stats") == false)) {
+      throw new IllegalArgumentException("perf control requires -search or -search-and-stats");
     }
 
     Bits filtered = null;
@@ -1367,7 +1382,6 @@ public class KnnGraphTester implements FormatterLogger {
         default -> throw new IllegalArgumentException("Unsupported search type: " + searchType);
       }
 
-      long startNS;
       try (MMapDirectory dir = new MMapDirectory(indexPath)) {
         // TODO: hmm dangerous since index isn't necessarily going to fit in RAM?
         dir.setPreload((x, ctx) -> x.endsWith(".vec") || x.endsWith(".veq"));
@@ -1407,20 +1421,37 @@ public class KnnGraphTester implements FormatterLogger {
           }
           log("done warmup\n");
           targetReader.reset();
-          startNS = System.nanoTime();
+          System.out.println("---- MEASURED PHASE READY ----");
           ThreadDetails startThreadDetails = new ThreadDetails();
-          for (int i = 0; i < numQueryVectors; i++) {
-            if (vectorEncoding.equals(VectorEncoding.BYTE)) {
-              byte[] target = targetReaderByte.nextBytes();
-              results[i] = doByteVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
-            } else {
-              float[] target = targetReader.next();
-              results[i] = doFloatVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
+          long measuredStartNS;
+          long measuredEndNS;
+          try (PerfControl perfControl = perfControlPath == null ? null : new PerfControl(perfControlPath, perfAckPath)) {
+            if (perfControl != null) {
+              perfControl.enableAndWaitForAck();
+            }
+            measuredStartNS = System.nanoTime();
+            for (int i = 0; i < numQueryVectors; i++) {
+              if (vectorEncoding.equals(VectorEncoding.BYTE)) {
+                byte[] target = targetReaderByte.nextBytes();
+                results[i] = doByteVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
+              } else {
+                float[] target = targetReader.next();
+                results[i] = doFloatVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
+              }
+            }
+            measuredEndNS = System.nanoTime();
+            if (perfControl != null) {
+              perfControl.disableAndWaitForAck();
             }
           }
+          System.out.println("---- MEASURED PHASE COMPLETE ----");
           ThreadDetails endThreadDetails = new ThreadDetails();
           perf.SearchPerfTest.ElapsedMSAndCoreCount elapsed = endThreadDetails.subtract(startThreadDetails);
-          elapsedMS = TimeUnit.NANOSECONDS.toMillis(endThreadDetails.ns - startThreadDetails.ns);
+          long measuredElapsedNS = measuredEndNS - measuredStartNS;
+          elapsedMS = TimeUnit.NANOSECONDS.toMillis(measuredElapsedNS);
+          System.out.printf(Locale.ROOT, "KNN measured queries: %d%n", numQueryVectors);
+          System.out.printf(Locale.ROOT, "KNN measured elapsed sec: %.9f%n", nsToSec(measuredElapsedNS));
+          System.out.printf(Locale.ROOT, "KNN measured QPS: %.9f%n", numQueryVectors / nsToSec(measuredElapsedNS));
           if (elapsed != null) {
             totalCpuTimeMS = (long) (elapsed.avgCPUCount() * elapsedMS);
           } else {

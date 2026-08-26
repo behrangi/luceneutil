@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /** Controls a perf stat session through its control and acknowledgement FIFOs. */
-final class PerfControl implements AutoCloseable {
+public final class PerfControl implements AutoCloseable {
   private static final long DEFAULT_ACK_TIMEOUT_MSEC = 10000;
   private static final long ACK_READER_CLEANUP_TIMEOUT_MSEC = 1000;
 
@@ -39,7 +39,7 @@ final class PerfControl implements AutoCloseable {
   private final BufferedReader acknowledgement;
   private final long acknowledgementTimeoutMsec;
 
-  PerfControl(Path controlPath, Path acknowledgementPath) throws IOException {
+  public PerfControl(Path controlPath, Path acknowledgementPath) throws IOException {
     BufferedWriter openedControl = Files.newBufferedWriter(controlPath, StandardCharsets.UTF_8);
     BufferedReader openedAcknowledgement;
     try {
@@ -70,11 +70,11 @@ final class PerfControl implements AutoCloseable {
     this.acknowledgementTimeoutMsec = acknowledgementTimeoutMsec;
   }
 
-  void enableAndWaitForAck() throws IOException {
+  public void enableAndWaitForAck() throws IOException {
     commandAndWaitForAck("enable");
   }
 
-  void disableAndWaitForAck() throws IOException {
+  public void disableAndWaitForAck() throws IOException {
     commandAndWaitForAck("disable");
   }
 

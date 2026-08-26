@@ -36,7 +36,7 @@ task compileKnn (type: JavaCompile) {
         }
     }
     source = [srcDir]
-    include "knn/KnnGraphTester.java", "WikiVectors.java", "perf/VectorDictionary.java"
+    include "knn/KnnGraphTester.java", "WikiVectors.java", "perf/VectorDictionary.java", "perf/PerfControl.java"
     classpath = luceneFT
     getDestinationDirectory().set(file(buildDir))
     getOptions().sourcepath = files(srcDir)
