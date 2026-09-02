@@ -310,6 +310,7 @@ if __name__ == "__main__":
   parser.add_argument("--knn-fanout", type=nonNegativeInteger, default=100, help="Additional KNN search fanout (default: 100)")
   parser.add_argument("--knn-query-start-index", type=nonNegativeInteger, default=0, help="First query vector ordinal (default: 0)")
   parser.add_argument("--knn-query-count", type=positiveInteger, default=100, help="Number of query vectors (default: 100)")
+  parser.add_argument("--knn-query-concurrency", type=positiveInteger, default=1, help="Number of simultaneous independent KNN queries (default: 1)")
   parser.add_argument("--knn-search-threads", type=searchConcurrency, default=0, help="KNN intra-query search threads (default: 0)")
   parser.add_argument("--knn-quantization", choices=("float", "4bit-compressed"), default="float", help="Existing KNN index representation (default: float)")
   parser.add_argument("--knn-max-conn", type=positiveInteger, default=32, help="Existing HNSW maxConn (default: 32)")
@@ -344,6 +345,7 @@ if __name__ == "__main__":
       fanout=args.knn_fanout,
       queryStartIndex=args.knn_query_start_index,
       queryCount=args.knn_query_count,
+      queryConcurrency=args.knn_query_concurrency,
       searchThreads=args.knn_search_threads,
       quantization=args.knn_quantization,
       maxConn=args.knn_max_conn,
@@ -360,6 +362,7 @@ if __name__ == "__main__":
     print(f"  index: {config.indexPath}")
     print(f"  queries: {config.queriesPath}")
     print(f"  query range: {config.queryStartIndex}..{config.queryStartIndex + config.queryCount - 1}")
+    print(f"  query concurrency: {config.queryConcurrency}")
     print(f"  topK/fanout: {config.topK}/{config.fanout}")
     print(f"  search threads: {config.searchThreads}")
     print(f"  quantization: {config.quantization}")

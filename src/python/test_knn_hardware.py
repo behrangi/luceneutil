@@ -41,7 +41,7 @@ class KnnHardwareCommandTest(unittest.TestCase):
     values = dict(
       indexPath="/indices/knn", docsPath="/data/docs.vec", queriesPath="/data/queries.vec",
       docCount=1_000_000, dim=1024, topK=100, fanout=100, queryStartIndex=7,
-      queryCount=123, searchThreads=4, quantization="float", seed=0,
+      queryCount=123, queryConcurrency=1, searchThreads=4, quantization="float", seed=0,
       perfControl=True, perfEvents=("cycles", "instructions"), profile="none",
       jvmArgs=("-XX:+AlwaysPreTouch",),
     )
@@ -60,6 +60,8 @@ class KnnHardwareCommandTest(unittest.TestCase):
     self.assertEqual("/tmp/control", command[command.index("-perfControlPath") + 1])
     self.assertEqual("/tmp/ack", command[command.index("-perfAckPath") + 1])
     self.assertEqual("/data/queries.vec", command[command.index("-search") + 1])
+    self.assertEqual("1", command[command.index("-queryConcurrency") + 1])
+    self.assertEqual("4", command[command.index("-numSearchThread") + 1])
     self.assertNotIn("-reindex", command)
     self.assertNotIn("-forceMerge", command)
     self.assertNotIn("-quantize", command)
@@ -101,6 +103,7 @@ class KnnHardwareCommandTest(unittest.TestCase):
     self.assertEqual(2.5, result["benchmark"]["latency_ms_per_query"])
     self.assertEqual(0.48, result["benchmark"]["average_cpu_cores"])
     self.assertEqual(321, result["benchmark"]["average_visited"])
+    self.assertEqual(1, result["benchmark"]["knn_query_concurrency"])
     self.assertEqual(["cycles", "instructions"], result["perf"]["requested_events"])
 
   def test_parse_result_uses_explicit_measurement_and_summary(self):
@@ -179,7 +182,7 @@ class KnnHardwareCommandTest(unittest.TestCase):
       body.index("---- MEASURED PHASE READY ----"),
       body.index("perfControl.enableAndWaitForAck();"),
       body.index("measuredStartNS = System.nanoTime();"),
-      body.index("for (int i = 0; i < numQueryVectors; i++)", body.index("measuredStartNS = System.nanoTime();")),
+      body.index("runQueryPhase(queryExecutor", body.index("measuredStartNS = System.nanoTime();")),
       body.index("measuredEndNS = System.nanoTime();"),
       body.index("perfControl.disableAndWaitForAck();"),
       body.index("---- MEASURED PHASE COMPLETE ----"),
@@ -187,6 +190,33 @@ class KnnHardwareCommandTest(unittest.TestCase):
       body.index("StoredFields storedFields"),
     ]
     self.assertEqual(positions, sorted(positions))
+
+  def test_outer_concurrency_is_distinct_and_waits_for_every_query(self):
+    module, unused = load_runner_module()
+    command, unused_java, unused_jvm = module.buildCommand(
+      self.config(module, queryCount=2000, queryConcurrency=8, searchThreads=0),
+      "/lucene", module.artifactPaths("/runs", "baseline", 0), "/tmp/c", "/tmp/a",
+    )
+    self.assertEqual("8", command[command.index("-queryConcurrency") + 1])
+    self.assertEqual("0", command[command.index("-numSearchThread") + 1])
+    self.assertEqual("2000", command[command.index("-nquery") + 1])
+
+    source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
+    helper = source[source.index("private void runQueryPhase"):source.index("private void collectHnswTraversalScores")]
+    self.assertIn("for (int i = 0; i < numQueryVectors; i++)", helper)
+    self.assertIn("future.get();", helper)
+    body = source[source.index("private void testSearch"):source.index("private void collectHnswTraversalScores")]
+    self.assertEqual(2, body.count("runQueryPhase(queryExecutor"))
+    self.assertLess(body.index("runQueryPhase(queryExecutor"), body.index("---- MEASURED PHASE READY ----"))
+    self.assertLess(body.rindex("runQueryPhase(queryExecutor"), body.index("measuredEndNS = System.nanoTime();"))
+    self.assertLess(body.index("measuredEndNS = System.nanoTime();"), body.index("perfControl.disableAndWaitForAck();"))
+
+  def test_java_default_and_validation_require_positive_concurrency(self):
+    source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
+    self.assertIn("queryConcurrency = 1;", source)
+    self.assertIn('case "-queryConcurrency":', source)
+    self.assertIn("if (queryConcurrency < 1)", source)
+    self.assertIn('new IndexSearcher(reader, executorService)', source)
 
 
 class KnnHardwareCLITest(unittest.TestCase):
@@ -226,10 +256,10 @@ class KnnHardwareCLITest(unittest.TestCase):
   def test_cli_propagates_float_and_explicit_values(self):
     captured = self.run_example(
       "--knn-top-k", "25", "--knn-fanout", "75", "--knn-query-start-index", "9",
-      "--knn-query-count", "100", "--knn-search-threads", "4", "--seed", "7",
+      "--knn-query-count", "100", "--knn-query-concurrency", "3", "--knn-search-threads", "4", "--seed", "7",
     )
     config = captured["config"]
-    self.assertEqual((25, 75, 9, 100, 4, 7), (config.topK, config.fanout, config.queryStartIndex, config.queryCount, config.searchThreads, config.seed))
+    self.assertEqual((25, 75, 9, 100, 3, 4, 7), (config.topK, config.fanout, config.queryStartIndex, config.queryCount, config.queryConcurrency, config.searchThreads, config.seed))
     self.assertEqual("float", config.quantization)
 
   def test_cli_propagates_compressed_and_shared_tool_options(self):
@@ -242,6 +272,18 @@ class KnnHardwareCLITest(unittest.TestCase):
     self.assertEqual(("cycles", "instructions"), config.perfEvents)
     self.assertEqual("none", config.profile)
     self.assertEqual(("-XX:+AlwaysPreTouch",), config.jvmArgs)
+
+  def test_cli_defaults_query_concurrency_to_one(self):
+    self.assertEqual(1, self.run_example()["config"].queryConcurrency)
+
+  def test_cli_rejects_non_positive_query_concurrency(self):
+    runner = str(PYTHON_DIR / "example.py")
+    for value in ("0", "-1"):
+      with mock.patch.dict(sys.modules, {"competition": types.ModuleType("competition")}), mock.patch.object(
+        sys, "argv", [runner, "--knn-query-concurrency", value]
+      ), self.assertRaises(SystemExit) as exited:
+        runpy.run_path(runner, run_name="__main__")
+      self.assertNotEqual(0, exited.exception.code)
 
   def test_cli_rejects_build_and_reindex(self):
     runner = str(PYTHON_DIR / "example.py")

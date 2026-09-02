@@ -20,6 +20,7 @@ class Config:
   fanout: int
   queryStartIndex: int
   queryCount: int
+  queryConcurrency: int
   searchThreads: int
   quantization: str
   maxConn: int = 32
@@ -87,6 +88,7 @@ def buildCommand(config, checkout, paths, controlPath=None, ackPath=None):
     "-beamWidthIndex", str(config.beamWidthIndex),
     "-topK", str(config.topK),
     "-fanout", str(config.fanout),
+    "-queryConcurrency", str(config.queryConcurrency),
     "-numSearchThread", str(config.searchThreads),
     "-queryStartIndex", str(config.queryStartIndex),
     "-nquery", str(config.queryCount),
@@ -165,6 +167,7 @@ def buildResult(config, competitor, iteration, measured, perfData, javaExecutabl
       "fanout": config.fanout,
       "query_start_index": config.queryStartIndex,
       "query_count": config.queryCount,
+      "knn_query_concurrency": config.queryConcurrency,
       "search_threads": config.searchThreads,
       "seed": measured["seed"],
       "measured_tasks": measured["measured_tasks"],

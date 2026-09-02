@@ -40,6 +40,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Future;
@@ -203,6 +204,7 @@ public class KnnGraphTester implements FormatterLogger {
   private int numMergeThread;
   private int numMergeWorker;
   private int numSearchThread;
+  private int queryConcurrency;
   private ExecutorService exec;
   private VectorSimilarityFunction similarityFunction;
   private VectorEncoding vectorEncoding;
@@ -259,6 +261,7 @@ public class KnnGraphTester implements FormatterLogger {
     quantizeCompress = false;
     numIndexThreads = 8;
     numSearchThread = 0;
+    queryConcurrency = 1;
     queryStartIndex = 0;
     indexType = IndexType.HNSW;
     overSample = 1f;
@@ -540,6 +543,16 @@ public class KnnGraphTester implements FormatterLogger {
             throw new IllegalArgumentException("-numSearchThread must be >= 0");
           }
           log("numSearchThread = %d\n", numSearchThread);
+          break;
+        case "-queryConcurrency":
+          if (iarg == args.length - 1) {
+            throw new IllegalArgumentException("-queryConcurrency requires a following number");
+          }
+          queryConcurrency = Integer.parseInt(args[++iarg]);
+          if (queryConcurrency < 1) {
+            throw new IllegalArgumentException("-queryConcurrency must be >= 1");
+          }
+          log("queryConcurrency = %d\n", queryConcurrency);
           break;
         case "-parentJoin":
           if (iarg == args.length - 1) {
@@ -1360,6 +1373,9 @@ public class KnnGraphTester implements FormatterLogger {
     int[][] resultIds = new int[numQueryVectors][];
     long elapsedMS, totalCpuTimeMS, totalVisited = 0;
     ExecutorService executorService;
+    ExecutorService queryExecutor = queryConcurrency > 1
+        ? Executors.newFixedThreadPool(queryConcurrency, new NamedThreadFactory("knn-query"))
+        : null;
     if (numSearchThread > 0) {
       executorService = Executors.newFixedThreadPool(numSearchThread, new NamedThreadFactory("hnsw-search"));
     } else {
@@ -1372,6 +1388,21 @@ public class KnnGraphTester implements FormatterLogger {
       VectorReaderByte targetReaderByte = null;
       if (targetReader instanceof VectorReaderByte b) {
         targetReaderByte = b;
+      }
+      final byte[][] byteTargets;
+      final float[][] floatTargets;
+      if (vectorEncoding.equals(VectorEncoding.BYTE)) {
+        byteTargets = new byte[numQueryVectors][];
+        floatTargets = null;
+        for (int i = 0; i < numQueryVectors; i++) {
+          byteTargets[i] = Arrays.copyOf(targetReaderByte.nextBytes(), dim);
+        }
+      } else {
+        byteTargets = null;
+        floatTargets = new float[numQueryVectors][];
+        for (int i = 0; i < numQueryVectors; i++) {
+          floatTargets[i] = Arrays.copyOf(targetReader.next(), dim);
+        }
       }
 
       int oversampledTopK = (overSample > 1) ? (int) (this.topK * overSample) : this.topK;
@@ -1405,22 +1436,20 @@ public class KnnGraphTester implements FormatterLogger {
           // warm up (and optionally collect HNSW traversal scores)
           if (hnswScoreHistogram && vectorEncoding.equals(VectorEncoding.FLOAT32)) {
             // TODO: collect traversal scores for radius search too?
+            targetReader.reset();
             collectHnswTraversalScores(reader, targetReader, getKnnField(filterStrategy), oversampledTopK, oversampledFanout, metric);
           } else {
-            for (int i = 0; i < numQueryVectors; i++) {
-              final Result result;
+            runQueryPhase(queryExecutor, i -> {
+              Result result;
               if (vectorEncoding.equals(VectorEncoding.BYTE)) {
-                byte[] target = targetReaderByte.nextBytes();
-                result = doByteVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, maxResultSize);
+                result = doByteVectorQuery(searcher, byteTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, maxResultSize);
               } else {
-                float[] target = targetReader.next();
-                result = doFloatVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, maxResultSize, rerank, rerankQuantizeBits, this.topK);
+                result = doFloatVectorQuery(searcher, floatTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, maxResultSize, rerank, rerankQuantizeBits, this.topK);
               }
               resultSizes[i] = Math.max(1, result.topDocs.scoreDocs.length);
-            }
+            });
           }
           log("done warmup\n");
-          targetReader.reset();
           System.out.println("---- MEASURED PHASE READY ----");
           ThreadDetails startThreadDetails = new ThreadDetails();
           long measuredStartNS;
@@ -1430,15 +1459,13 @@ public class KnnGraphTester implements FormatterLogger {
               perfControl.enableAndWaitForAck();
             }
             measuredStartNS = System.nanoTime();
-            for (int i = 0; i < numQueryVectors; i++) {
+            runQueryPhase(queryExecutor, i -> {
               if (vectorEncoding.equals(VectorEncoding.BYTE)) {
-                byte[] target = targetReaderByte.nextBytes();
-                results[i] = doByteVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
+                results[i] = doByteVectorQuery(searcher, byteTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
               } else {
-                float[] target = targetReader.next();
-                results[i] = doFloatVectorQuery(searcher, target, searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
+                results[i] = doFloatVectorQuery(searcher, floatTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
               }
-            }
+            });
             measuredEndNS = System.nanoTime();
             if (perfControl != null) {
               perfControl.disableAndWaitForAck();
@@ -1484,6 +1511,9 @@ public class KnnGraphTester implements FormatterLogger {
     } finally {
       if (executorService != null) {
         executorService.shutdown();
+      }
+      if (queryExecutor != null) {
+        queryExecutor.shutdown();
       }
     }
 
@@ -1549,6 +1579,50 @@ public class KnnGraphTester implements FormatterLogger {
           indexType.toString(),
           rerankDesc
         );
+    }
+  }
+
+  @FunctionalInterface
+  private interface QueryOperation {
+    void run(int queryIndex) throws IOException;
+  }
+
+  /** Runs each query index exactly once and waits for every submitted query. */
+  private void runQueryPhase(ExecutorService queryExecutor, QueryOperation operation) throws IOException {
+    if (queryExecutor == null) {
+      for (int i = 0; i < numQueryVectors; i++) {
+        operation.run(i);
+      }
+      return;
+    }
+
+    List<Future<?>> futures = new ArrayList<>(numQueryVectors);
+    for (int i = 0; i < numQueryVectors; i++) {
+      final int queryIndex = i;
+      futures.add(queryExecutor.submit(() -> {
+        operation.run(queryIndex);
+        return null;
+      }));
+    }
+    for (Future<?> future : futures) {
+      try {
+        future.get();
+      } catch (InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        throw new IOException("interrupted while waiting for KNN queries", ie);
+      } catch (ExecutionException ee) {
+        Throwable cause = ee.getCause();
+        if (cause instanceof IOException ioe) {
+          throw ioe;
+        }
+        if (cause instanceof RuntimeException re) {
+          throw re;
+        }
+        if (cause instanceof Error error) {
+          throw error;
+        }
+        throw new IOException("KNN query failed", cause);
+      }
     }
   }
 
