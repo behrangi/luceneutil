@@ -23,6 +23,8 @@ class Config:
   queryConcurrency: int
   searchThreads: int
   quantization: str
+  warmupRepetitions: int = 1
+  measuredRepetitions: int = 1
   maxConn: int = 32
   beamWidthIndex: int = 100
   metric: str = "dot_product"
@@ -90,6 +92,8 @@ def buildCommand(config, checkout, paths, controlPath=None, ackPath=None):
     "-fanout", str(config.fanout),
     "-queryConcurrency", str(config.queryConcurrency),
     "-numSearchThread", str(config.searchThreads),
+    "-warmupRepetitions", str(config.warmupRepetitions),
+    "-measuredRepetitions", str(config.measuredRepetitions),
     "-queryStartIndex", str(config.queryStartIndex),
     "-nquery", str(config.queryCount),
   ]
@@ -169,6 +173,9 @@ def buildResult(config, competitor, iteration, measured, perfData, javaExecutabl
       "query_count": config.queryCount,
       "knn_query_concurrency": config.queryConcurrency,
       "search_threads": config.searchThreads,
+      "warmup_repetitions": config.warmupRepetitions,
+      "measured_repetitions": config.measuredRepetitions,
+      "measured_queries": measured["measured_tasks"],
       "seed": measured["seed"],
       "measured_tasks": measured["measured_tasks"],
       "measured_elapsed_sec": measured["measured_elapsed_sec"],

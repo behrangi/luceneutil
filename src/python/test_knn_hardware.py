@@ -42,6 +42,7 @@ class KnnHardwareCommandTest(unittest.TestCase):
       indexPath="/indices/knn", docsPath="/data/docs.vec", queriesPath="/data/queries.vec",
       docCount=1_000_000, dim=1024, topK=100, fanout=100, queryStartIndex=7,
       queryCount=123, queryConcurrency=1, searchThreads=4, quantization="float", seed=0,
+      warmupRepetitions=1, measuredRepetitions=1,
       perfControl=True, perfEvents=("cycles", "instructions"), profile="none",
       jvmArgs=("-XX:+AlwaysPreTouch",),
     )
@@ -62,6 +63,8 @@ class KnnHardwareCommandTest(unittest.TestCase):
     self.assertEqual("/data/queries.vec", command[command.index("-search") + 1])
     self.assertEqual("1", command[command.index("-queryConcurrency") + 1])
     self.assertEqual("4", command[command.index("-numSearchThread") + 1])
+    self.assertEqual("1", command[command.index("-warmupRepetitions") + 1])
+    self.assertEqual("1", command[command.index("-measuredRepetitions") + 1])
     self.assertNotIn("-reindex", command)
     self.assertNotIn("-forceMerge", command)
     self.assertNotIn("-quantize", command)
@@ -104,7 +107,31 @@ class KnnHardwareCommandTest(unittest.TestCase):
     self.assertEqual(0.48, result["benchmark"]["average_cpu_cores"])
     self.assertEqual(321, result["benchmark"]["average_visited"])
     self.assertEqual(1, result["benchmark"]["knn_query_concurrency"])
+    self.assertEqual(1, result["benchmark"]["warmup_repetitions"])
+    self.assertEqual(1, result["benchmark"]["measured_repetitions"])
+    self.assertEqual(100, result["benchmark"]["measured_queries"])
     self.assertEqual(["cycles", "instructions"], result["perf"]["requested_events"])
+
+  def test_result_schema_distinguishes_unique_and_repeated_queries(self):
+    module, unused = load_runner_module()
+    measured = {
+      "measured_tasks": 16_000, "measured_elapsed_sec": 2.0, "qps": 8_000.0,
+      "recall": 0.91, "latency_ms_per_query": 0.125, "cpu_ms_per_query": 0.1,
+      "average_cpu_cores": 0.8, "average_visited": 321,
+      "segment_count": 4, "vector_ram_mb": 512.0, "seed": 0,
+    }
+    result = module.buildResult(
+      self.config(module, queryCount=2000, queryConcurrency=8,
+                  warmupRepetitions=8, measuredRepetitions=8),
+      "baseline", 0, measured, None, "java", ("-server",),
+    )
+    benchmark = result["benchmark"]
+    self.assertEqual(2000, benchmark["query_count"])
+    self.assertEqual(8, benchmark["warmup_repetitions"])
+    self.assertEqual(8, benchmark["measured_repetitions"])
+    self.assertEqual(16_000, benchmark["measured_queries"])
+    self.assertEqual(16_000, benchmark["measured_tasks"])
+    self.assertEqual(8_000.0, benchmark["qps"])
 
   def test_parse_result_uses_explicit_measurement_and_summary(self):
     module, unused = load_runner_module()
@@ -194,19 +221,26 @@ class KnnHardwareCommandTest(unittest.TestCase):
   def test_outer_concurrency_is_distinct_and_waits_for_every_query(self):
     module, unused = load_runner_module()
     command, unused_java, unused_jvm = module.buildCommand(
-      self.config(module, queryCount=2000, queryConcurrency=8, searchThreads=0),
+      self.config(module, queryCount=2000, queryConcurrency=8, searchThreads=0,
+                  warmupRepetitions=8, measuredRepetitions=8),
       "/lucene", module.artifactPaths("/runs", "baseline", 0), "/tmp/c", "/tmp/a",
     )
     self.assertEqual("8", command[command.index("-queryConcurrency") + 1])
     self.assertEqual("0", command[command.index("-numSearchThread") + 1])
     self.assertEqual("2000", command[command.index("-nquery") + 1])
+    self.assertEqual("8", command[command.index("-warmupRepetitions") + 1])
+    self.assertEqual("8", command[command.index("-measuredRepetitions") + 1])
 
     source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
-    helper = source[source.index("private void runQueryPhase"):source.index("private void collectHnswTraversalScores")]
-    self.assertIn("for (int i = 0; i < numQueryVectors; i++)", helper)
+    helper = source[source.index("private long runQueryPhase"):source.index("private void collectHnswTraversalScores")]
+    self.assertIn("int totalExecutions = Math.multiplyExact(numQueryVectors, repetitions)", helper)
+    self.assertIn("int workerCount = Math.min(queryConcurrency, totalExecutions)", helper)
+    self.assertIn("AtomicInteger nextOrdinal", helper)
+    self.assertIn("ordinal % numQueryVectors", helper)
+    self.assertIn("ordinal / numQueryVectors", helper)
     self.assertIn("future.get();", helper)
     body = source[source.index("private void testSearch"):source.index("private void collectHnswTraversalScores")]
-    self.assertEqual(2, body.count("runQueryPhase(queryExecutor"))
+    self.assertEqual(3, body.count("runQueryPhase(queryExecutor"))
     self.assertLess(body.index("runQueryPhase(queryExecutor"), body.index("---- MEASURED PHASE READY ----"))
     self.assertLess(body.rindex("runQueryPhase(queryExecutor"), body.index("measuredEndNS = System.nanoTime();"))
     self.assertLess(body.index("measuredEndNS = System.nanoTime();"), body.index("perfControl.disableAndWaitForAck();"))
@@ -217,6 +251,65 @@ class KnnHardwareCommandTest(unittest.TestCase):
     self.assertIn('case "-queryConcurrency":', source)
     self.assertIn("if (queryConcurrency < 1)", source)
     self.assertIn('new IndexSearcher(reader, executorService)', source)
+
+  def test_repeated_work_count_and_recall_retention(self):
+    source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
+    body = source[source.index("private void testSearch"):source.index("private void collectHnswTraversalScores")]
+    self.assertIn("Math.multiplyExact((long) numQueryVectors, measuredRepetitions)", body)
+    self.assertIn("if (repetition == 0) {\n                results[i] = result;", body)
+    self.assertIn("measuredQueryCount / nsToSec(measuredElapsedNS)", body)
+    self.assertIn("totalVisited / measuredQueryCount", source)
+    self.assertIn("checkResults(resultIds, nn)", body)
+
+  def test_warmup_initialization_is_joined_before_remaining_repetitions(self):
+    source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
+    body = source[source.index("private void testSearch"):source.index("private void collectHnswTraversalScores")]
+    initialization = body.index("runQueryPhase(queryExecutor, 1")
+    result_size_write = body.index("resultSizes[i] = Math.max", initialization)
+    remaining_count = body.index("int remainingWarmupRepetitions", result_size_write)
+    repeated = body.index("runQueryPhase(queryExecutor, remainingWarmupRepetitions", remaining_count)
+    ready = body.index("---- MEASURED PHASE READY ----", repeated)
+    self.assertLess(initialization, result_size_write)
+    self.assertLess(result_size_write, remaining_count)
+    self.assertLess(remaining_count, repeated)
+    self.assertLess(repeated, ready)
+    repeated_body = body[repeated:ready]
+    self.assertIn("resultSizes[i]", repeated_body)
+    self.assertNotIn("resultSizes[i] =", repeated_body)
+    self.assertIn("Math.max(0, warmupRepetitions - 1)", body)
+
+  def test_zero_one_and_three_warmup_repetition_paths(self):
+    source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
+    body = source[source.index("private void testSearch"):source.index("private void collectHnswTraversalScores")]
+    self.assertIn("warmupRepetitions == 0", body)
+    self.assertIn("Arrays.fill(resultSizes, maxResultSize)", body)
+    self.assertIn("else if (warmupRepetitions > 0)", body)
+    self.assertIn("runQueryPhase(queryExecutor, 1", body)
+    self.assertIn("runQueryPhase(queryExecutor, remainingWarmupRepetitions", body)
+    # Q=100, W=3 is one Q-sized initialization pass plus Q*(W-1): 100 + 200.
+    self.assertEqual(300, 100 + 100 * (3 - 1))
+
+  def test_histogram_remains_the_first_warmup_pass_and_has_result_sizes(self):
+    source = (ROOT / "src/main/knn/KnnGraphTester.java").read_text(encoding="utf-8")
+    body = source[source.index("private void testSearch"):source.index("private void collectHnswTraversalScores")]
+    histogram = body.index("collectHnswTraversalScores(")
+    ordinary_initialization = body.index("else if (warmupRepetitions > 0)", histogram)
+    remaining = body.index("int remainingWarmupRepetitions", ordinary_initialization)
+    self.assertLess(histogram, ordinary_initialization)
+    self.assertLess(ordinary_initialization, remaining)
+    self.assertIn("warmupRepetitions == 0 || collectHnswScores", body)
+
+  def test_command_repetition_does_not_expand_unique_query_range(self):
+    module, unused = load_runner_module()
+    command, unused_java, unused_jvm = module.buildCommand(
+      self.config(module, queryStartIndex=0, queryCount=2000, queryConcurrency=96,
+                  warmupRepetitions=96, measuredRepetitions=96),
+      "/lucene", module.artifactPaths("/runs", "baseline", 0), "/tmp/c", "/tmp/a",
+    )
+    self.assertEqual("2000", command[command.index("-nquery") + 1])
+    self.assertEqual("0", command[command.index("-queryStartIndex") + 1])
+    self.assertEqual("96", command[command.index("-queryConcurrency") + 1])
+    self.assertEqual("96", command[command.index("-measuredRepetitions") + 1])
 
 
 class KnnHardwareCLITest(unittest.TestCase):
@@ -274,7 +367,31 @@ class KnnHardwareCLITest(unittest.TestCase):
     self.assertEqual(("-XX:+AlwaysPreTouch",), config.jvmArgs)
 
   def test_cli_defaults_query_concurrency_to_one(self):
-    self.assertEqual(1, self.run_example()["config"].queryConcurrency)
+    config = self.run_example()["config"]
+    self.assertEqual(1, config.queryConcurrency)
+    self.assertEqual((1, 1), (config.warmupRepetitions, config.measuredRepetitions))
+
+  def test_cli_propagates_repetitions_without_tasks_per_category(self):
+    config = self.run_example("--warmup-repetitions", "8", "--measured-repetitions", "8")["config"]
+    self.assertEqual((8, 8), (config.warmupRepetitions, config.measuredRepetitions))
+
+  def test_cli_accepts_zero_warmup(self):
+    config = self.run_example("--warmup-repetitions", "0", "--measured-repetitions", "1")["config"]
+    self.assertEqual((0, 1), (config.warmupRepetitions, config.measuredRepetitions))
+
+  def test_cli_requires_both_repetition_options(self):
+    for option, value in (("--warmup-repetitions", "2"), ("--measured-repetitions", "3")):
+      with self.assertRaises(AssertionError):
+        self.run_example(option, value)
+
+  def test_cli_rejects_invalid_repetition_values(self):
+    runner = str(PYTHON_DIR / "example.py")
+    for option, value in (("--warmup-repetitions", "-1"), ("--measured-repetitions", "0"), ("--measured-repetitions", "-1")):
+      with mock.patch.dict(sys.modules, {"competition": types.ModuleType("competition")}), mock.patch.object(
+        sys, "argv", [runner, option, value]
+      ), self.assertRaises(SystemExit) as exited:
+        runpy.run_path(runner, run_name="__main__")
+      self.assertNotEqual(0, exited.exception.code)
 
   def test_cli_rejects_non_positive_query_concurrency(self):
     runner = str(PYTHON_DIR / "example.py")

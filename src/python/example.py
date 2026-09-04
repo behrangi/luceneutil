@@ -190,8 +190,16 @@ def validateKnnOptions(parser, args):
     parser.error("--workload knn search does not support --reindex")
   if args.hardware_summary:
     parser.error("--hardware-summary is implicit for --workload knn")
-  if args.warmups is not None or any(value is not None for value in (args.warmup_repetitions, args.measured_repetitions, args.tasks_per_category)):
-    parser.error("KnnGraphTester uses one warmup pass and one measured pass; normal-search repetition options do not apply to --workload knn")
+  if args.warmups is not None:
+    parser.error("legacy --warmups does not apply to --workload knn; use --warmup-repetitions and --measured-repetitions")
+  if args.tasks_per_category is not None:
+    parser.error("--tasks-per-category applies only to the normal search workload")
+  repetitions = (args.warmup_repetitions, args.measured_repetitions)
+  if (repetitions[0] is None) != (repetitions[1] is None):
+    parser.error("--workload knn requires --warmup-repetitions and --measured-repetitions together")
+  if repetitions[0] is None:
+    args.warmup_repetitions = 1
+    args.measured_repetitions = 1
 
 
 def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEvents):
@@ -347,6 +355,8 @@ if __name__ == "__main__":
       queryCount=args.knn_query_count,
       queryConcurrency=args.knn_query_concurrency,
       searchThreads=args.knn_search_threads,
+      warmupRepetitions=args.warmup_repetitions,
+      measuredRepetitions=args.measured_repetitions,
       quantization=args.knn_quantization,
       maxConn=args.knn_max_conn,
       beamWidthIndex=args.knn_beam_width_index,
@@ -362,7 +372,11 @@ if __name__ == "__main__":
     print(f"  index: {config.indexPath}")
     print(f"  queries: {config.queriesPath}")
     print(f"  query range: {config.queryStartIndex}..{config.queryStartIndex + config.queryCount - 1}")
+    print(f"  unique queries: {config.queryCount}")
     print(f"  query concurrency: {config.queryConcurrency}")
+    print(f"  warmup repetitions: {config.warmupRepetitions}")
+    print(f"  measured repetitions: {config.measuredRepetitions}")
+    print(f"  measured queries: {config.queryCount * config.measuredRepetitions}")
     print(f"  topK/fanout: {config.topK}/{config.fanout}")
     print(f"  search threads: {config.searchThreads}")
     print(f"  quantization: {config.quantization}")

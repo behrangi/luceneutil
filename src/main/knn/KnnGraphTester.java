@@ -205,6 +205,8 @@ public class KnnGraphTester implements FormatterLogger {
   private int numMergeWorker;
   private int numSearchThread;
   private int queryConcurrency;
+  private int warmupRepetitions;
+  private int measuredRepetitions;
   private ExecutorService exec;
   private VectorSimilarityFunction similarityFunction;
   private VectorEncoding vectorEncoding;
@@ -262,6 +264,8 @@ public class KnnGraphTester implements FormatterLogger {
     numIndexThreads = 8;
     numSearchThread = 0;
     queryConcurrency = 1;
+    warmupRepetitions = 1;
+    measuredRepetitions = 1;
     queryStartIndex = 0;
     indexType = IndexType.HNSW;
     overSample = 1f;
@@ -553,6 +557,26 @@ public class KnnGraphTester implements FormatterLogger {
             throw new IllegalArgumentException("-queryConcurrency must be >= 1");
           }
           log("queryConcurrency = %d\n", queryConcurrency);
+          break;
+        case "-warmupRepetitions":
+          if (iarg == args.length - 1) {
+            throw new IllegalArgumentException("-warmupRepetitions requires a following number");
+          }
+          warmupRepetitions = Integer.parseInt(args[++iarg]);
+          if (warmupRepetitions < 0) {
+            throw new IllegalArgumentException("-warmupRepetitions must be >= 0");
+          }
+          log("warmupRepetitions = %d\n", warmupRepetitions);
+          break;
+        case "-measuredRepetitions":
+          if (iarg == args.length - 1) {
+            throw new IllegalArgumentException("-measuredRepetitions requires a following number");
+          }
+          measuredRepetitions = Integer.parseInt(args[++iarg]);
+          if (measuredRepetitions < 1) {
+            throw new IllegalArgumentException("-measuredRepetitions must be >= 1");
+          }
+          log("measuredRepetitions = %d\n", measuredRepetitions);
           break;
         case "-parentJoin":
           if (iarg == args.length - 1) {
@@ -1371,6 +1395,8 @@ public class KnnGraphTester implements FormatterLogger {
     int[][] nn = exactNN != null ? exactNN.ids() : null;
     Result[] results = new Result[numQueryVectors];
     int[][] resultIds = new int[numQueryVectors][];
+    long warmupQueryCount = Math.multiplyExact((long) numQueryVectors, warmupRepetitions);
+    long measuredQueryCount = Math.multiplyExact((long) numQueryVectors, measuredRepetitions);
     long elapsedMS, totalCpuTimeMS, totalVisited = 0;
     ExecutorService executorService;
     ExecutorService queryExecutor = queryConcurrency > 1
@@ -1432,14 +1458,20 @@ public class KnnGraphTester implements FormatterLogger {
             case KNN -> this.topK;
             case RADIUS -> indexNumDocs;
           };
+          boolean collectHnswScores = hnswScoreHistogram && vectorEncoding.equals(VectorEncoding.FLOAT32);
+          if (warmupRepetitions == 0 || collectHnswScores) {
+            Arrays.fill(resultSizes, maxResultSize);
+          }
 
           // warm up (and optionally collect HNSW traversal scores)
-          if (hnswScoreHistogram && vectorEncoding.equals(VectorEncoding.FLOAT32)) {
+          if (warmupRepetitions > 0 && collectHnswScores) {
             // TODO: collect traversal scores for radius search too?
             targetReader.reset();
             collectHnswTraversalScores(reader, targetReader, getKnnField(filterStrategy), oversampledTopK, oversampledFanout, metric);
-          } else {
-            runQueryPhase(queryExecutor, i -> {
+          } else if (warmupRepetitions > 0) {
+            // Preserve the old one-pass warmup as an initialization barrier: all result sizes
+            // must be established before any repeated warmup query reads them.
+            runQueryPhase(queryExecutor, 1, (i, repetition) -> {
               Result result;
               if (vectorEncoding.equals(VectorEncoding.BYTE)) {
                 result = doByteVectorQuery(searcher, byteTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, maxResultSize);
@@ -1447,9 +1479,20 @@ public class KnnGraphTester implements FormatterLogger {
                 result = doFloatVectorQuery(searcher, floatTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, maxResultSize, rerank, rerankQuantizeBits, this.topK);
               }
               resultSizes[i] = Math.max(1, result.topDocs.scoreDocs.length);
+              return result;
             });
           }
-          log("done warmup\n");
+          int remainingWarmupRepetitions = Math.max(0, warmupRepetitions - 1);
+          if (remainingWarmupRepetitions > 0) {
+            runQueryPhase(queryExecutor, remainingWarmupRepetitions, (i, repetition) -> {
+              if (vectorEncoding.equals(VectorEncoding.BYTE)) {
+                return doByteVectorQuery(searcher, byteTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
+              }
+              return doFloatVectorQuery(searcher, floatTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
+            });
+          }
+          log("done warmup: %d query executions (%d unique queries x %d repetitions)\n",
+              warmupQueryCount, numQueryVectors, warmupRepetitions);
           System.out.println("---- MEASURED PHASE READY ----");
           ThreadDetails startThreadDetails = new ThreadDetails();
           long measuredStartNS;
@@ -1459,12 +1502,17 @@ public class KnnGraphTester implements FormatterLogger {
               perfControl.enableAndWaitForAck();
             }
             measuredStartNS = System.nanoTime();
-            runQueryPhase(queryExecutor, i -> {
+            totalVisited = runQueryPhase(queryExecutor, measuredRepetitions, (i, repetition) -> {
+              Result result;
               if (vectorEncoding.equals(VectorEncoding.BYTE)) {
-                results[i] = doByteVectorQuery(searcher, byteTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
+                result = doByteVectorQuery(searcher, byteTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, resultSizes[i]);
               } else {
-                results[i] = doFloatVectorQuery(searcher, floatTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
+                result = doFloatVectorQuery(searcher, floatTargets[i], searchType, oversampledTopK, oversampledFanout, resultSimilarity, decay, filterStrategy, filterQuery, parentJoin, resultSizes[i], rerank, rerankQuantizeBits, this.topK);
               }
+              if (repetition == 0) {
+                results[i] = result;
+              }
+              return result;
             });
             measuredEndNS = System.nanoTime();
             if (perfControl != null) {
@@ -1476,9 +1524,12 @@ public class KnnGraphTester implements FormatterLogger {
           perf.SearchPerfTest.ElapsedMSAndCoreCount elapsed = endThreadDetails.subtract(startThreadDetails);
           long measuredElapsedNS = measuredEndNS - measuredStartNS;
           elapsedMS = TimeUnit.NANOSECONDS.toMillis(measuredElapsedNS);
-          System.out.printf(Locale.ROOT, "KNN measured queries: %d%n", numQueryVectors);
+          System.out.printf(Locale.ROOT, "KNN unique queries: %d%n", numQueryVectors);
+          System.out.printf(Locale.ROOT, "KNN warmup repetitions: %d%n", warmupRepetitions);
+          System.out.printf(Locale.ROOT, "KNN measured repetitions: %d%n", measuredRepetitions);
+          System.out.printf(Locale.ROOT, "KNN measured queries: %d%n", measuredQueryCount);
           System.out.printf(Locale.ROOT, "KNN measured elapsed sec: %.9f%n", nsToSec(measuredElapsedNS));
-          System.out.printf(Locale.ROOT, "KNN measured QPS: %.9f%n", numQueryVectors / nsToSec(measuredElapsedNS));
+          System.out.printf(Locale.ROOT, "KNN measured QPS: %.9f%n", measuredQueryCount / nsToSec(measuredElapsedNS));
           if (elapsed != null) {
             totalCpuTimeMS = (long) (elapsed.avgCPUCount() * elapsedMS);
           } else {
@@ -1488,7 +1539,6 @@ public class KnnGraphTester implements FormatterLogger {
           // Fetch, validate and write result document ids.
           StoredFields storedFields = reader.storedFields();
           for (int i = 0; i < numQueryVectors; i++) {
-            totalVisited += results[i].visitedCount();
             int[] ids = KnnTesterUtils.getResultIds(results[i].topDocs(), storedFields);
             if (ids.length > this.topK) {
               ids = Arrays.copyOf(ids, this.topK);
@@ -1497,11 +1547,11 @@ public class KnnGraphTester implements FormatterLogger {
           }
           log(
               "completed "
-              + numQueryVectors
+              + measuredQueryCount
               + " searches in "
               + elapsedMS
               + " ms: "
-              + ((1000 * numQueryVectors) / elapsedMS)
+              + ((1000 * measuredQueryCount) / elapsedMS)
               + " QPS "
               + "CPU time="
               + totalCpuTimeMS
@@ -1550,8 +1600,8 @@ public class KnnGraphTester implements FormatterLogger {
           Locale.ROOT,
           "SUMMARY: %5.3f\t%5.3f\t%5.3f\t%5.3f\t%d\t%s\t%s\t%s\t%s\t%s\t%.3f\t%d\t%d\t%s\t%d\t%.2f\t%.2f\t%.2f\t%.2f\t%d\t%.2f\t%s\t%s\t%5.3f\t%5.3f\t%5.3f\t%s\t%s\t%s\n",
           recall,
-          elapsedMS / (float) numQueryVectors,
-          totalCpuTimeMS / (float) numQueryVectors,
+          elapsedMS / (float) measuredQueryCount,
+          totalCpuTimeMS / (float) measuredQueryCount,
           totalCpuTimeMS / (float) elapsedMS,
           numDocs,
           searchType,
@@ -1563,7 +1613,7 @@ public class KnnGraphTester implements FormatterLogger {
           maxConn,
           beamWidth,
           quantizeDesc,
-          totalVisited / numQueryVectors,
+          totalVisited / measuredQueryCount,
           reindexSec,
           numDocs / reindexSec,
           mergeSec,
@@ -1584,29 +1634,37 @@ public class KnnGraphTester implements FormatterLogger {
 
   @FunctionalInterface
   private interface QueryOperation {
-    void run(int queryIndex) throws IOException;
+    Result run(int queryIndex, int repetition) throws IOException;
   }
 
-  /** Runs each query index exactly once and waits for every submitted query. */
-  private void runQueryPhase(ExecutorService queryExecutor, QueryOperation operation) throws IOException {
+  /** Runs each query index the requested number of times and waits for every worker. */
+  private long runQueryPhase(ExecutorService queryExecutor, int repetitions, QueryOperation operation) throws IOException {
+    int totalExecutions = Math.multiplyExact(numQueryVectors, repetitions);
     if (queryExecutor == null) {
-      for (int i = 0; i < numQueryVectors; i++) {
-        operation.run(i);
+      long totalVisited = 0;
+      for (int ordinal = 0; ordinal < totalExecutions; ordinal++) {
+        totalVisited += operation.run(ordinal % numQueryVectors, ordinal / numQueryVectors).visitedCount();
       }
-      return;
+      return totalVisited;
     }
 
-    List<Future<?>> futures = new ArrayList<>(numQueryVectors);
-    for (int i = 0; i < numQueryVectors; i++) {
-      final int queryIndex = i;
+    int workerCount = Math.min(queryConcurrency, totalExecutions);
+    AtomicInteger nextOrdinal = new AtomicInteger();
+    List<Future<Long>> futures = new ArrayList<>(workerCount);
+    for (int worker = 0; worker < workerCount; worker++) {
       futures.add(queryExecutor.submit(() -> {
-        operation.run(queryIndex);
-        return null;
+        long visited = 0;
+        int ordinal;
+        while ((ordinal = nextOrdinal.getAndIncrement()) < totalExecutions) {
+          visited += operation.run(ordinal % numQueryVectors, ordinal / numQueryVectors).visitedCount();
+        }
+        return visited;
       }));
     }
-    for (Future<?> future : futures) {
+    long totalVisited = 0;
+    for (Future<Long> future : futures) {
       try {
-        future.get();
+        totalVisited += future.get();
       } catch (InterruptedException ie) {
         Thread.currentThread().interrupt();
         throw new IOException("interrupted while waiting for KNN queries", ie);
@@ -1624,6 +1682,7 @@ public class KnnGraphTester implements FormatterLogger {
         throw new IOException("KNN query failed", cause);
       }
     }
+    return totalVisited;
   }
 
   /**
