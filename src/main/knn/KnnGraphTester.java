@@ -241,6 +241,8 @@ public class KnnGraphTester implements FormatterLogger {
   private SearchType searchType;
   private Path perfControlPath;
   private Path perfAckPath;
+  private Path perfSystemControlPath;
+  private Path perfSystemAckPath;
   private float resultSimilarity, decay;
 
   private KnnGraphTester() {
@@ -603,6 +605,12 @@ public class KnnGraphTester implements FormatterLogger {
         case "-perfAckPath":
           perfAckPath = Paths.get(args[++iarg]);
           break;
+        case "-perfSystemControlPath":
+          perfSystemControlPath = Paths.get(args[++iarg]);
+          break;
+        case "-perfSystemAckPath":
+          perfSystemAckPath = Paths.get(args[++iarg]);
+          break;
         case "-hnswScoreHistogram":
           hnswScoreHistogram = true;
           break;
@@ -638,6 +646,12 @@ public class KnnGraphTester implements FormatterLogger {
     }
     if ((perfControlPath == null) != (perfAckPath == null)) {
       throw new IllegalArgumentException("perf control requires both -perfControlPath and -perfAckPath");
+    }
+    if ((perfSystemControlPath == null) != (perfSystemAckPath == null)) {
+      throw new IllegalArgumentException("system perf control requires both -perfSystemControlPath and -perfSystemAckPath");
+    }
+    if (perfSystemControlPath != null && perfControlPath == null) {
+      throw new IllegalArgumentException("system perf control requires process perf control");
     }
     if (perfControlPath != null && (operation == null || operation.equals("-search") == false && operation.equals("-search-and-stats") == false)) {
       throw new IllegalArgumentException("perf control requires -search or -search-and-stats");
@@ -1497,9 +1511,13 @@ public class KnnGraphTester implements FormatterLogger {
           ThreadDetails startThreadDetails = new ThreadDetails();
           long measuredStartNS;
           long measuredEndNS;
-          try (PerfControl perfControl = perfControlPath == null ? null : new PerfControl(perfControlPath, perfAckPath)) {
+          try (PerfControl perfControl = perfControlPath == null ? null : new PerfControl(perfControlPath, perfAckPath);
+               PerfControl perfSystemControl = perfSystemControlPath == null ? null : new PerfControl(perfSystemControlPath, perfSystemAckPath)) {
             if (perfControl != null) {
               perfControl.enableAndWaitForAck();
+            }
+            if (perfSystemControl != null) {
+              perfSystemControl.enableAndWaitForAck();
             }
             measuredStartNS = System.nanoTime();
             totalVisited = runQueryPhase(queryExecutor, measuredRepetitions, (i, repetition) -> {
@@ -1517,6 +1535,9 @@ public class KnnGraphTester implements FormatterLogger {
             measuredEndNS = System.nanoTime();
             if (perfControl != null) {
               perfControl.disableAndWaitForAck();
+            }
+            if (perfSystemControl != null) {
+              perfSystemControl.disableAndWaitForAck();
             }
           }
           System.out.println("---- MEASURED PHASE COMPLETE ----");

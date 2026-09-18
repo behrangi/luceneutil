@@ -484,6 +484,7 @@ class Competition:
     jvmArgs=(),
     gc=None,
     profile="jfr",
+    perfSystemEvents=None,
   ):
     self.cold = cold
     self.competitors = []
@@ -528,6 +529,7 @@ class Competition:
     self.measuredTaskRepeatCount = measuredTaskRepeatCount
     self.perfControl = perfControl
     self.perfEvents = None if perfEvents is None else tuple(perfEvents)
+    self.perfSystemEvents = None if perfSystemEvents is None else tuple(perfSystemEvents)
     self.verbose = verbose
     self.hardwareSummary = hardwareSummary
     self.outputDir = outputDir

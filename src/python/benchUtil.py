@@ -562,7 +562,8 @@ def _usablePerfEvent(events, name):
   return event
 
 
-def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, resolvedPerfEvents, perfData, javaExecutable, jvmArgs, profile):
+def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, resolvedPerfEvents, perfData, javaExecutable, jvmArgs, profile,
+                        resolvedPerfSystemEvents=(), systemPerfData=None):
   competition = c.competition
   events = perfData["events"] if perfData is not None else []
   cycles = _usablePerfEvent(events, "cycles")
@@ -615,6 +616,9 @@ def buildHardwareResult(c, iteration, seed, staticSeed, summary, perfEnabled, re
       "requested_events": list(resolvedPerfEvents),
       "events": events,
       "metadata_lines": perfData["metadata_lines"] if perfData is not None else [],
+      "requested_system_events": list(resolvedPerfSystemEvents),
+      "system_events": systemPerfData["events"] if systemPerfData is not None else [],
+      "system_metadata_lines": systemPerfData["metadata_lines"] if systemPerfData is not None else [],
     },
     "derived": {
       "ipc": ipc,
@@ -1503,6 +1507,7 @@ class RunAlgs:
     exactPhases = c.competition.warmupTaskRepeatCount is not None
     perfControl = getattr(c.competition, "perfControl", False)
     perfEvents = getattr(c.competition, "perfEvents", None)
+    perfSystemEvents = getattr(c.competition, "perfSystemEvents", None)
     hardwareSummary = getattr(c.competition, "hardwareSummary", False)
     profile = getattr(c.competition, "profile", "jfr")
     extraJVMArgs = tuple(getattr(c.competition, "jvmArgs", ()))
@@ -1510,9 +1515,23 @@ class RunAlgs:
     if perfEvents is not None and PERF_EXE is None:
       raise RuntimeError("--perf-events requires a perf executable")
     resolvedPerfEvents = PERF_STATS if perfEvents is None else perfEvents
-    with PerfControlResources(perfControl) as perfControlResources:
+    resolvedPerfSystemEvents = () if perfSystemEvents is None else perfSystemEvents
+    if resolvedPerfSystemEvents and not perfControl:
+      raise RuntimeError("--perf-system-events requires --perf-control")
+    with PerfControlResources(perfControl) as perfControlResources, PerfControlResources(bool(resolvedPerfSystemEvents)) as perfSystemControlResources:
       command = []
+      perfSystemStatFile = None
       if PERF_EXE is not None:
+        if resolvedPerfSystemEvents:
+          if perfStatFile is None:
+            perfSystemStatFile = processLogFile + ".perf-system.stat"
+          else:
+            perfSystemStatFile = os.path.join(os.path.dirname(perfStatFile), "perf-system.stat")
+          command += [
+            PERF_EXE, "stat", "-a", "-dd", "-x", ";", "--no-big-num", "-o", perfSystemStatFile,
+            "-e", ",".join(resolvedPerfSystemEvents), "--delay=-1",
+            "--control=fifo:%s,%s" % (perfSystemControlResources.controlPath, perfSystemControlResources.ackPath),
+          ]
         command += [PERF_EXE, "stat", "-dd"]
         if perfStatFile is not None:
           command += ["-x", ";", "--no-big-num", "-o", perfStatFile]
@@ -1556,6 +1575,9 @@ class RunAlgs:
       if perfControl:
         w("-perfControlPath", perfControlResources.controlPath)
         w("-perfAckPath", perfControlResources.ackPath)
+      if resolvedPerfSystemEvents:
+        w("-perfSystemControlPath", perfSystemControlResources.controlPath)
+        w("-perfSystemAckPath", perfSystemControlResources.ackPath)
       if hardwareSummary:
         w("-hardwareSummary")
       w("-field", "body")
@@ -1630,6 +1652,14 @@ class RunAlgs:
             perfLines = perfLines[-40:]
           for line in perfLines:
             print(line.rstrip())
+        if perfSystemStatFile is not None and os.path.exists(perfSystemStatFile):
+          print(f"  system perf stat: {perfSystemStatFile}")
+          with open(perfSystemStatFile) as perfOutput:
+            perfLines = perfOutput.readlines()
+          if not verbose:
+            perfLines = perfLines[-40:]
+          for line in perfLines:
+            print(line.rstrip())
         with open(processLogFile) as s:
           lines = s.readlines()
         if not verbose:
@@ -1637,6 +1667,8 @@ class RunAlgs:
           print("  final output:")
         for line in lines:
           print(line.rstrip())
+        if resolvedPerfSystemEvents:
+          raise RuntimeError("SearchPerfTest or system-wide perf failed; check perf permissions and log %s" % processLogFile)
         raise RuntimeError("SearchPerfTest failed; see log %s" % processLogFile)
 
       if verbose:
@@ -1650,13 +1682,18 @@ class RunAlgs:
         resultJSONFile = self.getSearchResultJSONPath(iter, c)
         if resultJSONFile is not None:
           perfData = None
+          systemPerfData = None
           if PERF_EXE is not None:
             if not os.path.exists(perfStatFile):
               raise RuntimeError("perf stat output is missing: %s" % perfStatFile)
             perfData = parsePerfStat(perfStatFile)
+            if resolvedPerfSystemEvents:
+              if not os.path.exists(perfSystemStatFile):
+                raise RuntimeError("system-wide perf stat output is missing: %s (check perf permissions)" % perfSystemStatFile)
+              systemPerfData = parsePerfStat(perfSystemStatFile)
           structuredResult = buildHardwareResult(
             c, iter, seed, staticSeed, summary, PERF_EXE is not None, resolvedPerfEvents, perfData,
-            javaExecutable, jvmArgs, profile,
+            javaExecutable, jvmArgs, profile, resolvedPerfSystemEvents, systemPerfData,
           )
           writeJSONAtomically(resultJSONFile, structuredResult)
       else:

@@ -81,6 +81,19 @@ class KnnHardwareCommandTest(unittest.TestCase):
     self.assertNotIn("-reindex", command)
     self.assertNotIn("-forceMerge", command)
 
+  def test_system_perf_wraps_process_perf_with_separate_control(self):
+    module, unused = load_runner_module()
+    paths = module.artifactPaths("/runs/one", "baseline", 0)
+    command, unused_java, unused_jvm = module.buildCommand(
+      self.config(module, perfSystemEvents=("arm_cmn_0/hnf_mc_reqs/",)),
+      "/lucene", paths, "/tmp/process-control", "/tmp/process-ack", "/tmp/system-control", "/tmp/system-ack",
+    )
+    self.assertEqual(["/usr/bin/perf", "stat", "-a"], command[:3])
+    self.assertEqual(paths["perfSystem"], command[command.index("-o") + 1])
+    self.assertEqual(2, command.count("/usr/bin/perf"))
+    self.assertEqual("/tmp/system-control", command[command.index("-perfSystemControlPath") + 1])
+    self.assertEqual("/tmp/system-ack", command[command.index("-perfSystemAckPath") + 1])
+
   def test_competitors_and_iterations_have_distinct_artifacts(self):
     module, unused = load_runner_module()
     paths = {

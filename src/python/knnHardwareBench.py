@@ -36,6 +36,7 @@ class Config:
   jvmArgs: tuple = ()
   gc: str | None = None
   verbose: bool = False
+  perfSystemEvents: tuple = ()
 
 
 _MEASURED_QUERIES = re.compile(r"^KNN measured queries: (\d+)$")
@@ -52,15 +53,24 @@ def artifactPaths(outputDir, competitor, iteration):
     "result": os.path.join(iterationDir, "result.log"),
     "process": os.path.join(iterationDir, "process.log"),
     "perf": os.path.join(iterationDir, "perf.stat"),
+    "perfSystem": os.path.join(iterationDir, "perf-system.stat"),
     "jfr": os.path.join(iterationDir, "profile.jfr"),
     "json": os.path.join(iterationDir, "result.json"),
   }
 
 
-def buildCommand(config, checkout, paths, controlPath=None, ackPath=None):
+def buildCommand(config, checkout, paths, controlPath=None, ackPath=None, systemControlPath=None, systemAckPath=None):
   if config.perfControl != (controlPath is not None and ackPath is not None):
     raise ValueError("perf-control paths must be supplied exactly when perf control is enabled")
   command = []
+  if config.perfSystemEvents:
+    if not config.perfControl or systemControlPath is None or systemAckPath is None:
+      raise ValueError("system perf events require perf control and system control paths")
+    command += [
+      benchUtil.PERF_EXE, "stat", "-a", "-dd", "-x", ";", "--no-big-num", "-o", paths["perfSystem"],
+      "-e", ",".join(config.perfSystemEvents), "--delay=-1",
+      f"--control=fifo:{systemControlPath},{systemAckPath}",
+    ]
   if config.perfControl:
     if benchUtil.PERF_EXE is None:
       raise RuntimeError("--perf-control requires a perf executable")
@@ -103,6 +113,8 @@ def buildCommand(config, checkout, paths, controlPath=None, ackPath=None):
     command += ["-quantize", "-quantizeBits", "4", "-quantizeCompress"]
   if config.perfControl:
     command += ["-perfControlPath", controlPath, "-perfAckPath", ackPath]
+  if config.perfSystemEvents:
+    command += ["-perfSystemControlPath", systemControlPath, "-perfSystemAckPath", systemAckPath]
   command += ["-search", config.queriesPath]
   return command, javaExecutable, jvmArgs
 
@@ -150,7 +162,7 @@ def parseResult(processLog):
   return values
 
 
-def buildResult(config, competitor, iteration, measured, perfData, javaExecutable, jvmArgs):
+def buildResult(config, competitor, iteration, measured, perfData, javaExecutable, jvmArgs, systemPerfData=None):
   return {
     "schema_version": 1,
     "benchmark": {
@@ -197,6 +209,9 @@ def buildResult(config, competitor, iteration, measured, perfData, javaExecutabl
       "requested_events": list(config.perfEvents),
       "events": [] if perfData is None else perfData["events"],
       "metadata_lines": [] if perfData is None else perfData["metadata_lines"],
+      "requested_system_events": list(config.perfSystemEvents),
+      "system_events": [] if systemPerfData is None else systemPerfData["events"],
+      "system_metadata_lines": [] if systemPerfData is None else systemPerfData["metadata_lines"],
     },
   }
 
@@ -204,8 +219,11 @@ def buildResult(config, competitor, iteration, measured, perfData, javaExecutabl
 def runOne(config, checkout, competitor, iteration, outputDir):
   paths = artifactPaths(outputDir, competitor, iteration)
   os.makedirs(paths["directory"], exist_ok=False)
-  with benchUtil.PerfControlResources(config.perfControl) as resources:
-    command, javaExecutable, jvmArgs = buildCommand(config, checkout, paths, resources.controlPath, resources.ackPath)
+  with benchUtil.PerfControlResources(config.perfControl) as resources, benchUtil.PerfControlResources(bool(config.perfSystemEvents)) as systemResources:
+    command, javaExecutable, jvmArgs = buildCommand(
+      config, checkout, paths, resources.controlPath, resources.ackPath,
+      systemResources.controlPath, systemResources.ackPath,
+    )
     if config.verbose:
       print("COMMAND: %s" % " ".join(command))
     with open(paths["process"], "wb") as processLog:
@@ -225,13 +243,15 @@ def runOne(config, checkout, competitor, iteration, outputDir):
           print("  measured phase complete")
       exitStatus = process.wait()
   if exitStatus != 0:
-    raise RuntimeError(f"KnnGraphTester failed with exit status {exitStatus}; see {paths['process']}")
+    suffix = "; system-wide perf may require elevated perf permissions" if config.perfSystemEvents else ""
+    raise RuntimeError(f"KnnGraphTester failed with exit status {exitStatus}{suffix}; see {paths['process']}")
   measured = parseResult(paths["process"])
   with open(paths["result"], "w", encoding="utf-8") as resultLog:
     for line in measured.pop("retained_lines"):
       resultLog.write(line + "\n")
   perfData = benchUtil.parsePerfStat(paths["perf"]) if config.perfControl else None
-  result = buildResult(config, competitor, iteration, measured, perfData, javaExecutable, jvmArgs)
+  systemPerfData = benchUtil.parsePerfStat(paths["perfSystem"]) if config.perfSystemEvents else None
+  result = buildResult(config, competitor, iteration, measured, perfData, javaExecutable, jvmArgs, systemPerfData)
   benchUtil.writeJSONAtomically(paths["json"], result)
   print(f"  measured queries: {measured['measured_tasks']}")
   print(f"  measured elapsed: {measured['measured_elapsed_sec']:.3f} s")

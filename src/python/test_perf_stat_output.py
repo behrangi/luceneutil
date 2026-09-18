@@ -87,6 +87,29 @@ class PerfStatOutputTest(unittest.TestCase):
       self.assertEqual("java", command[0])
       self.assertFalse(os.path.exists(perf_stat))
 
+  def test_system_perf_is_outer_controlled_session_with_separate_output(self):
+    bench_util = load_bench_util()
+    with tempfile.TemporaryDirectory() as run_directory:
+      command, unused_process, perf_stat = run_search(
+        bench_util, run_directory, perf_executable="perf", perf_control=True,
+        perf_events=("cycles", "instructions"),
+        perf_system_events=("arm_cmn_0/hnf_mc_reqs/", "arm_cmn_0/hnf_mc_retries/"),
+      )
+      system_stat = os.path.join(run_directory, "baseline", "iteration-0", "perf-system.stat")
+      system_control_index = next(i for i, value in enumerate(command) if value.startswith("--control=fifo:"))
+      self.assertEqual(
+        [
+          "perf", "stat", "-a", "-dd", "-x", ";", "--no-big-num", "-o", system_stat,
+          "-e", "arm_cmn_0/hnf_mc_reqs/,arm_cmn_0/hnf_mc_retries/", "--delay=-1",
+        ],
+        command[:system_control_index],
+      )
+      process_perf_index = system_control_index + 1
+      self.assertEqual("perf", command[process_perf_index])
+      self.assertEqual(perf_stat, command[command.index("-o", process_perf_index) + 1])
+      self.assertIn("-perfSystemControlPath", command)
+      self.assertIn("-perfSystemAckPath", command)
+
 
 def load_bench_util():
   pwd = types.ModuleType("pwd")
@@ -100,7 +123,8 @@ def load_bench_util():
   return benchUtil
 
 
-def run_search(bench_util, output_directory, perf_executable, perf_control=False, perf_events=None, profile="jfr", jvm_args=(), gc=None):
+def run_search(bench_util, output_directory, perf_executable, perf_control=False, perf_events=None, profile="jfr", jvm_args=(), gc=None,
+               perf_system_events=None):
   class Process:
     stdout = io.BytesIO(b"java diagnostic\n")
 
@@ -126,6 +150,7 @@ def run_search(bench_util, output_directory, perf_executable, perf_control=False
     warmupTaskRepeatCount=0 if exact else None,
     measuredTaskRepeatCount=1 if exact else None,
     perfControl=perf_control, perfEvents=perf_events, hardwareSummary=False,
+    perfSystemEvents=perf_system_events,
     profile=profile, jvmArgs=tuple(jvm_args), gc=gc,
   )
   index = types.SimpleNamespace(getPath=lambda: "index", facets=None)

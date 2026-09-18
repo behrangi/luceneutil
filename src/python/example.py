@@ -145,18 +145,37 @@ def validateHardwareSummary(parser, args, exactPhases):
     parser.error("--hardware-summary applies only when search is enabled")
 
 
-def parsePerfEvents(parser, value, mode):
+def splitPerfEvents(parser, value, optionName):
+  events = []
+  start = 0
+  inPmuTerms = False
+  braceDepth = 0
+  for index, char in enumerate(value):
+    if char == "/":
+      inPmuTerms = not inPmuTerms
+    elif char == "{" and not inPmuTerms:
+      braceDepth += 1
+    elif char == "}" and not inPmuTerms and braceDepth > 0:
+      braceDepth -= 1
+    elif char == "," and not inPmuTerms and braceDepth == 0:
+      event = value[start:index].strip()
+      if event == "":
+        parser.error(f"{optionName} contains an empty event name")
+      events.append(event)
+      start = index + 1
+  event = value[start:].strip()
+  if event == "":
+    parser.error(f"{optionName} contains an empty event name")
+  events.append(event)
+  return tuple(events)
+
+
+def parsePerfEvents(parser, value, mode, optionName="--perf-events"):
   if value is None:
     return None
   if mode == "build":
-    parser.error("--perf-events applies only when search is enabled")
-  events = []
-  for entry in value.split(","):
-    event = entry.strip()
-    if event == "":
-      parser.error("--perf-events contains an empty event name")
-    events.append(event)
-  return tuple(events)
+    parser.error(f"{optionName} applies only when search is enabled")
+  return splitPerfEvents(parser, value, optionName)
 
 
 def validateJVMOptions(parser, args):
@@ -229,6 +248,9 @@ def printConciseConfiguration(args, comp, index, requestedTaskCategories, perfEv
       print(f"  tasks/category: {args.tasks_per_category}")
     print(f"  perf control: {'enabled' if args.perf_control else 'disabled'}")
     print(f"  perf events: {','.join(resolvedPerfEvents)}")
+    perfSystemEvents = getattr(comp, "perfSystemEvents", None)
+    if perfSystemEvents:
+      print(f"  perf system events: {','.join(perfSystemEvents)}")
     if args.hardware_summary:
       print("  hardware summary: enabled")
     print(f"  profile: {args.profile}")
@@ -292,6 +314,10 @@ if __name__ == "__main__":
     "--perf-events",
     help="Comma-separated perf stat events for this run (default: existing constants.PERF_STATS)",
   )
+  parser.add_argument(
+    "--perf-system-events",
+    help="Comma-separated system-wide perf stat events measured with -a during the controlled measured phase",
+  )
   parser.add_argument("--verbose", action="store_true", help="Print detailed benchmark diagnostics to the console")
   parser.add_argument("--jvm-arg", action="append", default=[], help="Additional JVM argument; repeat once per argv element")
   parser.add_argument(
@@ -328,6 +354,9 @@ if __name__ == "__main__":
     validateJVMOptions(parser, args)
     validateKnnOptions(parser, args)
     perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
+    perfSystemEvents = parsePerfEvents(parser, args.perf_system_events, args.mode, "--perf-system-events")
+    if perfSystemEvents is not None and not args.perf_control:
+      parser.error("--perf-system-events requires --perf-control")
     if args.perf_control:
       perfEvents = tuple(getattr(getattr(competition, "benchUtil", None), "PERF_STATS", ())) if perfEvents is None else perfEvents
     elif perfEvents is not None:
@@ -363,6 +392,7 @@ if __name__ == "__main__":
       seed=args.seed,
       perfControl=args.perf_control,
       perfEvents=perfEvents,
+      perfSystemEvents=() if perfSystemEvents is None else perfSystemEvents,
       profile=args.profile,
       jvmArgs=tuple(args.jvm_arg),
       gc=args.gc,
@@ -382,6 +412,8 @@ if __name__ == "__main__":
     print(f"  quantization: {config.quantization}")
     print(f"  seed: {config.seed if config.seed is not None else 'JVM-generated'}")
     print(f"  perf control: {'enabled' if config.perfControl else 'disabled'}")
+    if config.perfSystemEvents:
+      print(f"  perf system events: {','.join(config.perfSystemEvents)}")
     print(f"  profile: {config.profile}\n")
     knnHardwareBench.run(
       config,
@@ -396,6 +428,9 @@ if __name__ == "__main__":
   validatePerfControl(parser, args, exactPhases)
   validateHardwareSummary(parser, args, exactPhases)
   perfEvents = parsePerfEvents(parser, args.perf_events, args.mode)
+  perfSystemEvents = parsePerfEvents(parser, args.perf_system_events, args.mode, "--perf-system-events")
+  if perfSystemEvents is not None and not args.perf_control:
+    parser.error("--perf-system-events requires --perf-control")
   validateJVMOptions(parser, args)
   outputRoot = args.output_root
   if outputRoot is None:
@@ -424,6 +459,7 @@ if __name__ == "__main__":
       randomSeed=args.seed,
       perfControl=args.perf_control,
       perfEvents=perfEvents,
+      perfSystemEvents=perfSystemEvents,
       verbose=args.verbose,
       hardwareSummary=args.hardware_summary,
       outputDir=runDirectory,

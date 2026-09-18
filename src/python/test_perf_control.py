@@ -61,6 +61,19 @@ class PerfControlTest(unittest.TestCase):
   def test_empty_perf_event_is_rejected(self):
     self.assert_cli_rejected(("--perf-events", "cycles,,instructions"), "contains an empty event name")
 
+  def test_system_perf_events_preserve_pmu_term_commas(self):
+    competition = self.run_runner(
+      *self.exact_arguments(), "--perf-control",
+      "--perf-system-events", "arm_cmn_0/event=1,config=2/, arm_cmn_0/hnf_mc_retries/",
+    )
+    self.assertEqual(
+      ("arm_cmn_0/event=1,config=2/", "arm_cmn_0/hnf_mc_retries/"),
+      competition.options["perfSystemEvents"],
+    )
+
+  def test_system_perf_events_require_control(self):
+    self.assert_cli_rejected(("--perf-system-events", "arm_cmn_0/hnf_mc_reqs/"), "requires --perf-control")
+
   def test_build_mode_rejects_perf_events(self):
     self.assert_cli_rejected(("--mode", "build", "--perf-events", "cycles"), "--perf-events applies only when search is enabled")
 
@@ -122,7 +135,7 @@ class PerfControlTest(unittest.TestCase):
     ]
     self.assertEqual(positions, sorted(positions))
 
-  def run_command(self, bench_util, exact, controlled, events=None, perf_exe="/usr/bin/perf"):
+  def run_command(self, bench_util, exact, controlled, events=None, perf_exe="/usr/bin/perf", system_events=None):
     class Process:
       stdout = io.BytesIO()
 
@@ -137,6 +150,7 @@ class PerfControlTest(unittest.TestCase):
       measuredTaskRepeatCount=2 if exact else None,
       perfControl=controlled,
       perfEvents=events,
+      perfSystemEvents=system_events,
     )
     competitor = types.SimpleNamespace(
       checkout="checkout", name="candidate", doSort=False, javaCommand="java", directory="MMapDirectory",

@@ -670,6 +670,8 @@ public class SearchPerfTest {
     final boolean hardwareSummary = args.getFlag("-hardwareSummary");
     final boolean hasPerfControlPath = args.hasArg("-perfControlPath");
     final boolean hasPerfAckPath = args.hasArg("-perfAckPath");
+    final boolean hasPerfSystemControlPath = args.hasArg("-perfSystemControlPath");
+    final boolean hasPerfSystemAckPath = args.hasArg("-perfSystemAckPath");
     if (exactPhases && (!hasWarmupTaskRepeatCount || !hasMeasuredTaskRepeatCount)) {
       throw new IllegalArgumentException("exact phases require both -warmupTaskRepeatCount and -measuredTaskRepeatCount");
     }
@@ -685,8 +687,16 @@ public class SearchPerfTest {
     if (hasPerfControlPath && exactPhases == false) {
       throw new IllegalArgumentException("perf control requires exact workload phases");
     }
+    if (hasPerfSystemControlPath != hasPerfSystemAckPath) {
+      throw new IllegalArgumentException("system perf control requires both -perfSystemControlPath and -perfSystemAckPath");
+    }
+    if (hasPerfSystemControlPath && hasPerfControlPath == false) {
+      throw new IllegalArgumentException("system perf control requires process perf control");
+    }
     final Path perfControlPath = hasPerfControlPath ? Paths.get(args.getString("-perfControlPath")) : null;
     final Path perfAckPath = hasPerfAckPath ? Paths.get(args.getString("-perfAckPath")) : null;
+    final Path perfSystemControlPath = hasPerfSystemControlPath ? Paths.get(args.getString("-perfSystemControlPath")) : null;
+    final Path perfSystemAckPath = hasPerfSystemAckPath ? Paths.get(args.getString("-perfSystemAckPath")) : null;
 
     final int warmupTaskRepeatCount = exactPhases ? args.getInt("-warmupTaskRepeatCount") : -1;
     final int measuredTaskRepeatCount = exactPhases ? args.getInt("-measuredTaskRepeatCount") : -1;
@@ -784,9 +794,13 @@ public class SearchPerfTest {
 
       System.out.println("---- MEASURED PHASE READY ----");
       ThreadDetails measuredStartThreadDetails = new ThreadDetails();
-      try (PerfControl perfControl = perfControlPath == null ? null : new PerfControl(perfControlPath, perfAckPath)) {
+      try (PerfControl perfControl = perfControlPath == null ? null : new PerfControl(perfControlPath, perfAckPath);
+           PerfControl perfSystemControl = perfSystemControlPath == null ? null : new PerfControl(perfSystemControlPath, perfSystemAckPath)) {
         if (perfControl != null) {
           perfControl.enableAndWaitForAck();
+        }
+        if (perfSystemControl != null) {
+          perfSystemControl.enableAndWaitForAck();
         }
         measuredStartNanos = System.nanoTime();
         measuredThreads.start();
@@ -797,6 +811,9 @@ public class SearchPerfTest {
         }
         if (perfControl != null) {
           perfControl.disableAndWaitForAck();
+        }
+        if (perfSystemControl != null) {
+          perfSystemControl.disableAndWaitForAck();
         }
       }
       ThreadDetails measuredCompleteThreadDetails = new ThreadDetails();
